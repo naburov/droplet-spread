@@ -1,0 +1,73 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb, physics}
+
+\begin{document}
+\section{Discretized Equations for Droplet Spreading Simulation}
+
+\subsection{Phase Field Update}
+The phase field $\phi$ is updated using an explicit Euler scheme:
+\begin{align}
+\phi^{n+1}_{i,j} &= \phi^n_{i,j} - \Delta t \left( \mathbf{u}^n_{i,j} \cdot \nabla \phi^n_{i,j} + \frac{1}{Pe}\left(-f(\phi^n_{i,j}) + \epsilon^2 \nabla^2 \phi^n_{i,j}\right) \right)
+\end{align}
+
+where the gradient and Laplacian terms are discretized as:
+\begin{align}
+\nabla \phi^n_{i,j} &= \left( \frac{\phi^n_{i+1,j} - \phi^n_{i-1,j}}{2\Delta x}, \frac{\phi^n_{i,j+1} - \phi^n_{i,j-1}}{2\Delta y} \right) \\
+\nabla^2 \phi^n_{i,j} &= \frac{\phi^n_{i+1,j} + \phi^n_{i-1,j} - 2\phi^n_{i,j}}{\Delta x^2} + \frac{\phi^n_{i,j+1} + \phi^n_{i,j-1} - 2\phi^n_{i,j}}{\Delta y^2}
+\end{align}
+
+\subsection{Velocity Field Update}
+The velocity field is updated in two steps:
+
+\subsubsection{Intermediate Velocity}
+First, an intermediate velocity $\mathbf{u}^*$ is computed:
+\begin{align}
+\mathbf{u}^*_{i,j} &= \mathbf{u}^n_{i,j} + \Delta t \left[ -(\mathbf{u}^n_{i,j} \cdot \nabla)\mathbf{u}^n_{i,j} + \frac{1}{Re}\nabla^2\mathbf{u}^n_{i,j} - \nabla p^n_{i,j} + \mathbf{F}_{st,i,j}^n \right]
+\end{align}
+
+where the surface tension force is calculated as:
+\begin{align}
+\mathbf{F}_{st,i,j}^n &= \frac{3\epsilon}{2\sqrt{2}We}\kappa^n_{i,j}\nabla\phi^n_{i,j}
+\end{align}
+
+with curvature $\kappa$ computed from the phase field:
+\begin{align}
+\kappa^n_{i,j} &= \nabla \cdot \left( \frac{\nabla\phi^n_{i,j}}{|\nabla\phi^n_{i,j}|} \right)
+\end{align}
+
+\subsubsection{Projection Step}
+Then, a projection is applied to enforce incompressibility:
+\begin{align}
+\nabla^2 P^{n+1}_{i,j} &= \frac{1}{\Delta t}\nabla \cdot \mathbf{u}^*_{i,j} \\
+\mathbf{u}^{n+1}_{i,j} &= \mathbf{u}^*_{i,j} - \Delta t \nabla P^{n+1}_{i,j}
+\end{align}
+
+\subsection{Incompressibility Enforcement}
+For strong enforcement of incompressibility, an iterative method is used:
+\begin{align}
+\text{for $k = 1$ to $MaxIter$:} \\
+\nabla^2 \psi^k_{i,j} &= \nabla \cdot \mathbf{u}^{k-1}_{i,j} \\
+\mathbf{u}^{k}_{i,j} &= \mathbf{u}^{k-1}_{i,j} - \alpha \nabla \psi^k_{i,j} \\
+\text{if } \max|\nabla \cdot \mathbf{u}^{k}_{i,j}| &< \text{tolerance, break}
+\end{align}
+where $\alpha = 0.8$ is a relaxation factor.
+
+\subsection{Boundary Conditions}
+\subsubsection{Contact Angle Boundary Condition}
+At the solid boundary ($j=0$):
+\begin{align}
+\frac{\phi^n_{i,1} - \phi^n_{i,-1}}{2\Delta y} &= -|\nabla\phi^n_{i,0}|\cos\theta
+\end{align}
+
+This is implemented as:
+\begin{align}
+\phi^n_{i,-1} &= \phi^n_{i,1} + 2\Delta y|\nabla\phi^n_{i,0}|\cos\theta
+\end{align}
+
+\subsubsection{No-slip Boundary Condition}
+At the solid boundary ($j=0$):
+\begin{align}
+\mathbf{u}^n_{i,0} &= \mathbf{0}
+\end{align}
+
+\end{document}

@@ -1,0 +1,110 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{physics}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{float}
+
+\title{Numerical Scheme for Droplet Spreading Simulation}
+\author{Fluid Dynamics Laboratory}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Governing Equations}
+The simulation solves a coupled system of Navier-Stokes equations with a phase field model:
+
+\subsection{Phase Field Model}
+The evolution of the phase field $\phi$ is governed by:
+\begin{equation}
+\frac{\partial \phi}{\partial t} + \mathbf{u} \cdot \nabla \phi = \frac{1}{\textrm{Pe}} \left( -f'(\phi) + \epsilon^2 \nabla^2 \phi \right)
+\end{equation}
+where $f(\phi) = \frac{1}{4}(\phi^2-1)^2$ is the double-well potential.
+
+\subsection{Navier-Stokes Equations}
+The fluid velocity $\mathbf{u}$ is governed by:
+\begin{equation}
+\frac{\partial \mathbf{u}}{\partial t} + (\mathbf{u} \cdot \nabla) \mathbf{u} = -\nabla p + \frac{1}{\textrm{Re}} \nabla^2 \mathbf{u} - \mathbf{F}_{st}
+\end{equation}
+with the incompressibility constraint:
+\begin{equation}
+\nabla \cdot \mathbf{u} = 0
+\end{equation}
+
+\section{Numerical Discretization}
+
+\subsection{Spatial Discretization}
+A uniform grid with spacing $\Delta x = \Delta y = \frac{L_x}{N_x} = \frac{L_y}{N_y}$ is used.
+
+\subsection{Time Integration}
+An explicit Euler scheme is used for both the phase field and velocity:
+\begin{equation}
+\phi^{n+1} = \phi^n + \Delta t \cdot \textrm{RHS}_\phi^n
+\end{equation}
+\begin{equation}
+\mathbf{u}^{n+1} = \mathbf{u}^n + \Delta t \cdot \textrm{RHS}_\mathbf{u}^n
+\end{equation}
+
+\section{Surface Tension Force}
+The surface tension force is calculated as:
+\begin{equation}
+\mathbf{F}_{st} = \frac{\epsilon}{\textrm{We}} \kappa \nabla \phi
+\end{equation}
+where $\kappa = \nabla \cdot \left( \frac{\nabla \phi}{|\nabla \phi|} \right)$ is the curvature.
+
+\section{Pressure Solver}
+The pressure Poisson equation is:
+\begin{equation}
+\nabla^2 p = \nabla \cdot \mathbf{F}_{st}
+\end{equation}
+which is solved using a sparse linear system.
+
+\section{Projection Method for Incompressibility}
+An iterative projection method is used:
+\begin{algorithm}[H]
+\caption{Enforce Incompressibility}
+\begin{algorithmic}
+\FOR{$iter = 1$ to $max\_iterations$}
+    \STATE Calculate divergence: $div = \nabla \cdot \mathbf{u}$
+    \IF{$max(|div|) < tolerance$}
+        \STATE break
+    \ENDIF
+    \STATE Solve: $\nabla^2 p_{corr} = div$
+    \STATE $\mathbf{u} = \mathbf{u} - \alpha \nabla p_{corr}$ (with $\alpha=0.8$ relaxation factor)
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\section{Boundary Conditions}
+
+\subsection{Velocity Boundary Conditions}
+\begin{itemize}
+    \item Bottom (wall): No-slip ($\mathbf{u} = 0$)
+    \item Top: Zero-gradient ($\frac{\partial \mathbf{u}}{\partial y} = 0$)
+    \item Left/Right: Zero-gradient ($\frac{\partial \mathbf{u}}{\partial x} = 0$)
+\end{itemize}
+
+\subsection{Phase Field Boundary Conditions}
+Contact angle $\theta$ is enforced at the wall (bottom boundary) by:
+\begin{equation}
+\mathbf{n} \cdot \nabla \phi = -|\nabla \phi| \cos\theta
+\end{equation}
+which is implemented by setting appropriate ghost values.
+
+\section{Numerical Parameters}
+\begin{itemize}
+    \item Grid: $100 \times 100$
+    \item Domain: $[0,1] \times [0,1]$
+    \item Interface thickness: $\epsilon = 0.03$
+    \item Reynolds number: Re = 100 (bulk) / 10 (interface)
+    \item Peclet number: Pe = 1.0
+    \item Weber number: We = 1.0
+    \item Time step: $\Delta t = 0.0002$
+    \item Contact angle: $\theta = 60°$
+\end{itemize}
+
+\end{document} 

@@ -1,0 +1,45 @@
+\documentclass{standalone}
+\usepackage{tikz}
+\usepackage{amsmath}
+\usepackage[utf8]{inputenc}
+\usepackage[russian]{babel}
+\usetikzlibrary{arrows.meta, shapes.geometric, positioning, fit, backgrounds, calc, decorations.pathmorphing, arrows.meta}
+
+\begin{document}
+\begin{tikzpicture}[
+    node distance=1.5cm and 2cm,
+    box/.style={draw, rounded corners, fill=black!5, minimum width=6cm, minimum height=1.5cm, align=center, text width=5.8cm},
+    decision/.style={draw, diamond, aspect=2, fill=black!5, align=center, text width=4.5cm},
+    arrow/.style={-Stealth, thick},
+    iteration/.style={draw, circle, fill=black!5, minimum size=1.2cm, align=center},
+    note/.style={draw, rectangle, dashed, fill=black!5, align=center, text width=2.5cm}
+]
+
+% Nodes for the algorithm
+\node[box] (start) {Инициализация $\mathbf{U}^0$};
+\node[iteration, right=1cm of start] (iter) {$k=0$};
+\node[box, below=of start] (compute_div) {Вычисление дивергенции:\\$\nabla \cdot \mathbf{U}^k = \frac{\partial u_x^k}{\partial x} + \frac{\partial u_y^k}{\partial y}$};
+\node[box, below=of compute_div] (poisson) {Решение уравнения Лапласа для коррекции давления:\\$\nabla^2 p^k = \frac{1}{\Delta t}\nabla \cdot \mathbf{U}^k$};
+\node[box, below=of poisson] (correct) {Обновление поля скорости:\\$\mathbf{U}^{k+1} = \mathbf{U}^k - \alpha \nabla p^k$\\где $\alpha=0.8$ - коэффициент релаксации};
+\node[decision, below=of correct] (check) {Проверка \\$\max|\nabla \cdot \mathbf{U}^{k+1}| < \text{допуск}$};
+\node[box, below=of check] (done) {$\mathbf{U}^{n+1} = \mathbf{U}^{k+1}$};
+\node[iteration, right=2.5cm of correct] (increase) {$k = k+1$};
+
+% Arrows
+\draw[arrow] (start) -- (compute_div);
+\draw[arrow] (compute_div) -- (poisson);
+\draw[arrow] (poisson) -- (correct);
+\draw[arrow] (correct) -- (check);
+\draw[arrow] (check) -- node[right] {Да} (done);
+\draw[arrow] (check) -- node[above] {Нет} ++(5,0) -| (increase);
+\draw[arrow] (increase) -- node[right]{} ++ (0, 5) |-(compute_div);
+\draw[arrow] (iter) -- ++(0,-1) -| (compute_div);
+
+% Draw a box around the iteration part
+\begin{scope}[on background layer]
+    \node[draw, thick, dashed, rounded corners, fit=(compute_div) (poisson) (correct) (check) (increase), inner sep=10pt, fill=black!2] {};
+    \node[above=0.5cm of compute_div, anchor=south] {Итерационный цикл};
+\end{scope}
+
+\end{tikzpicture}
+\end{document} 
