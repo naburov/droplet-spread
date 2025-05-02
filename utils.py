@@ -1,5 +1,7 @@
 import numpy as np
 from scipy.sparse import diags
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from scipy.sparse.linalg import spsolve

@@ -1,45 +1,92 @@
 import os
+import argparse
+import json
 from datetime import datetime
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import utils  # Assuming utils.py is in the same directory
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
-# import jax.numpy as jnp
 import time 
+import sys
 
-# Constants
-rho = 1.0  # Density
-Re1 = 1000.0  # Reynolds number
-Re2 = 10.0  # Reynolds number
-eta = lambda phi: 1.0  # Viscosity as a function of phi
-We = 10.0  # Weber number
-Pe = 1.0  # Peclet number
-epsilon = 0.05  # Small parameter for the equations
-alpha = 1.0  # Coefficient for curvature term
-phase_penalty = 1000.0  # Coefficient for phase penalty
-contact_angle = 120  # Contact angle
-# Grid setup
-Lx, Ly = 1.0, 1.0  # Domain size
-Nx, Ny = 100, 100  # Number of grid points
-dx, dy = Lx / Nx, Ly / Ny  # Grid spacing
+# Global variables used by multiple functions
+phi = None
+Re1 = None
+Re2 = None
+Pe = None
+epsilon = None
+phase_penalty = None
+contact_angle = None
 
-# Time setup
-dt = 0.001  # Time step
-t_max = 1.0  # Maximum time
-num_steps = int(t_max / dt)  # Number of time steps
-
-# Initialize fields
-U = np.zeros((Nx, Ny, 2))  # Velocity field (2D vector field)
-# Initialize pressure field
-P = np.zeros((Nx, Ny))  # Pressure field
-
-# Create a directory for the experiment with a timestamp
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-login_dir = f"experiment_{timestamp}"
-
-# Create the directory if it doesn't exist
-os.makedirs(login_dir, exist_ok=True)
+def load_config(config_path=None):
+    """
+    Load configuration from a JSON file or use defaults.
+    
+    Args:
+        config_path (str, optional): Path to the JSON configuration file.
+        
+    Returns:
+        dict: Configuration parameters.
+    """
+    # Default configuration
+    config = {
+        "physical_params": {
+            "rho": 1.0,
+            "Re1": 1000.0,
+            "Re2": 10.0,
+            "We": 10.0,
+            "Pe": 1.0,
+            "epsilon": 0.05,
+            "alpha": 1.0,
+            "phase_penalty": 1000.0,
+            "contact_angle": 120
+        },
+        "grid_params": {
+            "Lx": 1.0,
+            "Ly": 1.0,
+            "Nx": 100,
+            "Ny": 100
+        },
+        "time_params": {
+            "dt": 0.001,
+            "t_max": 1.0,
+            "checkpoint_interval": 50,
+            "dt_initial": 0.0005
+        },
+        "initial_conditions": {
+            "droplet_radius": 0.2
+        },
+        "restart": {
+            "restart_from": None
+        }
+    }
+    
+    # Load configuration from file if provided
+    if config_path:
+        try:
+            with open(config_path, 'r') as f:
+                loaded_config = json.load(f)
+                
+            # Update default config with loaded values (recursive update)
+            def update_dict(d, u):
+                for k, v in u.items():
+                    if isinstance(v, dict) and k in d and isinstance(d[k], dict):
+                        update_dict(d[k], v)
+                    else:
+                        d[k] = v
+            
+            update_dict(config, loaded_config)
+            sys.stdout.write(f"Configuration loaded from {config_path}")
+        except Exception as e:
+            sys.stdout.write(f"Error loading config file: {e}")
+            sys.stdout.write("Using default configuration")
+    else:
+        sys.stdout.write("No config file provided. Using default configuration.")
+    
+    return config
 
 def solve_poisson(rhs, dx, dy):
     """Solve the Poisson equation ∇²φ = f with a custom RHS."""
@@ -148,7 +195,6 @@ def update_velocity(U, p, surface_tension, current_dt, dx, dy):
     convective_term[..., 0] = U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1]  # u * ∂u/∂x + v * ∂u/∂y
     convective_term[..., 1] = U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1]  # u * ∂v/∂x + v * ∂v/∂y
 
-    # print(p_grad[0,:].max(), viscous_term[0,:].max(), surface_tension[0,:].max(), convective_term[0,:].max())
     # Right-hand side of the Navier-Stokes equation
     rhs_U = -p_grad + viscous_term - surface_tension + convective_term  # Shape: (M, N, 2)
 
@@ -261,7 +307,6 @@ def project_velocity(U, dx, dy, tolerance=1e-5, max_iterations=10):
     
     return U_projected
 
-
 def enforce_incompressibility(U, dx, dy, max_iterations=20, tolerance=1e-4):
     """More robust projection to enforce incompressibility"""
     for iter in range(max_iterations):
@@ -271,7 +316,7 @@ def enforce_incompressibility(U, dx, dy, max_iterations=20, tolerance=1e-4):
         div = u_x + v_y
 
         if iter > 100 and iter % 10 == 0:
-            print(f"Iteration {iter}, Max divergence: {np.max(np.abs(div))}")
+            sys.stdout.write(f"Iteration {iter}, Max divergence: {np.max(np.abs(div))}\n")
 
         max_div = np.max(np.abs(div))
         if max_div < tolerance:
@@ -290,8 +335,6 @@ def enforce_incompressibility(U, dx, dy, max_iterations=20, tolerance=1e-4):
         U = apply_velocity_boundary_conditions(U)
     return U
     
-
-
 def initialize_phase(Nx, Ny, radius):
     """Initialize the phase field with a semicircle droplet resting on the bottom boundary."""
     # Create a grid of coordinates
@@ -315,155 +358,167 @@ def initialize_phase(Nx, Ny, radius):
     
     return phi
 
-
-# Initialize the phase field with a semicircle droplet
-radius = 0.2  # Radius of the semicircle
-checkpoint_interval = 50
-phi = initialize_phase(Nx, Ny, radius)  # Initialize the phase field
-phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
-
-
-# Visualization of the phase field
-plt.imshow(phi.T, extent=[0, Lx, 0, Ly], origin='lower', cmap='viridis')
-plt.colorbar(label='Phase Field (phi)')
-plt.title('Phase Field Visualization')
-plt.xlabel('X-axis')
-plt.ylabel('Y-axis')
-plt.savefig(f'{login_dir}/initial_phase_field.png', bbox_inches='tight')
-plt.clf()
-
-# Create a directory for checkpoints
-checkpoint_dir = os.path.join(login_dir, "checkpoints")
-os.makedirs(checkpoint_dir, exist_ok=True)
-
-# Dump simulation parameters to a JSON file
-import json
-
-# Collect all simulation parameters
-simulation_params = {
-    "physical_params": {
-        "rho": rho,
-        "Re1": Re1,
-        "Re2": Re2,
-        "We": We,
-        "Pe": Pe,
-        "epsilon": epsilon,
-        "alpha": alpha,
-        "phase_penalty": phase_penalty,
-        "contact_angle": contact_angle
-    },
-    "grid_params": {
-        "Lx": Lx,
-        "Ly": Ly,
-        "Nx": Nx,
-        "Ny": Ny,
-        "dx": dx,
-        "dy": dy
-    },
-    "time_params": {
-        "dt": dt,
-        "t_max": t_max,
-        "num_steps": num_steps,
-        "checkpoint_interval": checkpoint_interval
-    },
-    "initial_conditions": {
-        "droplet_radius": radius
-    }
-}
-
-# Save parameters to JSON file
-params_file = os.path.join(login_dir, "simulation_parameters.json")
-with open(params_file, 'w') as f:
-    json.dump(simulation_params, f, indent=4)
-
-print(f"Simulation parameters saved to {params_file}")
-
-
-# Optional: restart from checkpoint
-# restart_from = '/Users/burovnikita/Desktop/Study/PhD/droplet/droplet_spreading_modeling/experiment_20250320_225309/checkpoints/checkpoint_000500.npz'  # Set to checkpoint path to restart, e.g. "experiment_20231215_123456/checkpoints/checkpoint_000500.npz"
-# restart_from = None
-# restart_from = '/Users/burovnikita/Desktop/Study/PhD/droplet/droplet_spreading_modeling/experiment_20250321_215442/checkpoints/checkpoint_000100.npz'
-restart_from = None
-# restart_from = "/Users/burovnikita/Desktop/Study/PhD/droplet/droplet_spreading_modeling/experiment_20250321_231311/checkpoints/checkpoint_000500.npz"
-
-if restart_from is not None:
-    print(f"Restarting from checkpoint: {restart_from}")
-    checkpoint_data = utils.load_checkpoint(restart_from)
+def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Droplet spreading simulation')
+    parser.add_argument('--config', type=str, help='Path to configuration file (JSON format)')
+    parser.add_argument('--output', type=str, help='Path to output directory')
+    args = parser.parse_args()
     
-    # Load simulation state
-    start_step = checkpoint_data['step']
-    phi = checkpoint_data['phi']
-    U = checkpoint_data['U']
-    P = checkpoint_data['P']
+    # Load configuration
+    config = load_config(args.config)
     
-    print(f"Loaded state from step {start_step}, continuing simulation...")
-else:
-    # Initialize from scratch (your existing initialization code)
-    start_step = 0
-    # Initialize phi, U, P as you already do
-
-dt_initial = 0.0005
-times = []
-# Then modify your main loop:
-for step in range(start_step, num_steps):
-    # Use dt_initial for the first 100 steps
-    # Compute derivatives and other terms
-    start_time = time.time()
-    current_dt = dt_initial if step < 100 else dt_initial
-    surface_tension = utils.surface_tension_force(phi, epsilon, We, dx, dy)
-    surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
+    # Access global variables
+    global phi, Re1, Re2, Pe, epsilon, phase_penalty, contact_angle
     
-    U = update_velocity(U, P, surface_tension, current_dt, dx, dy)
+    # Extract parameters from config
+    # Physical parameters
+    rho = config["physical_params"]["rho"]
+    Re1 = config["physical_params"]["Re1"]
+    Re2 = config["physical_params"]["Re2"]
+    We = config["physical_params"]["We"]
+    Pe = config["physical_params"]["Pe"]
+    epsilon = config["physical_params"]["epsilon"]
+    alpha = config["physical_params"]["alpha"]
+    phase_penalty = config["physical_params"]["phase_penalty"]
+    contact_angle = config["physical_params"]["contact_angle"]
+    
+    # Grid setup
+    Lx, Ly = config["grid_params"]["Lx"], config["grid_params"]["Ly"]
+    Nx, Ny = config["grid_params"]["Nx"], config["grid_params"]["Ny"]
+    dx, dy = Lx / Nx, Ly / Ny
+    
+    # Time setup
+    dt = config["time_params"]["dt"]
+    t_max = config["time_params"]["t_max"]
+    num_steps = int(t_max / dt)
+    checkpoint_interval = config["time_params"]["checkpoint_interval"]
+    dt_initial = config["time_params"]["dt_initial"]
+    
+    # Initial conditions
+    radius = config["initial_conditions"]["droplet_radius"]
+    
+    # Restart information
+    restart_from = config["restart"]["restart_from"]
+    
+    # Create a directory for the experiment
+    if args.output:
+        # Use provided output directory
+        login_dir = args.output
+        os.makedirs(login_dir, exist_ok=True)
+    else:
+        # Use timestamped directory (original behavior)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        login_dir = f"experiment_{timestamp}"
+        os.makedirs(login_dir, exist_ok=True)
 
-    # Project velocity to ensure continuity is satisfied
-    max_iterations = 1000 if step % 10 == 0 else 100
-    U = enforce_incompressibility(U, dx, dy, tolerance=1e-4, max_iterations=max_iterations)
-
-    # Add special handling for extreme divergence points
-    divergence, max_div, mean_div = check_continuity(U, dx, dy)
-    if max_div > 5.0:
-        # Find locations of extreme divergence
-        extreme_mask = np.abs(divergence) > 5.0
-        if np.any(extreme_mask):
-            # Apply local smoothing to problematic areas
-            for i in range(2):
-                smooth_field = U[..., i].copy()
-                smooth_field[1:-1, 1:-1][extreme_mask[1:-1, 1:-1]] = (
-                    U[0:-2, 1:-1, i][extreme_mask[1:-1, 1:-1]] + 
-                    U[2:, 1:-1, i][extreme_mask[1:-1, 1:-1]] + 
-                    U[1:-1, 0:-2, i][extreme_mask[1:-1, 1:-1]] + 
-                    U[1:-1, 2:, i][extreme_mask[1:-1, 1:-1]]
-                ) / 4.0
-                U[..., i] = smooth_field
-
-    # Apply no-slip boundary conditions
-    U = apply_velocity_boundary_conditions(U)
-
-    P = update_pressure(surface_tension, dx, dy)
-    P = utils.apply_pressure_boundary_conditions(P)
-    phi = update_phase(phi, U, current_dt, dx, dy)
-
-    # Apply contact angle boundary conditions
+    # Initialize the phase field with a semicircle droplet
+    phi = initialize_phase(Nx, Ny, radius)  # Initialize the phase field
     phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
-    end_time = time.time()
-    times.append(end_time - start_time)
-    # Print or log results for analysis
-    if step % 10 == 0:  # Print every 10 steps
-        print(f"Step {step}, Time {step * current_dt:.2f}")
-        print(f"Min/Max of U: {U.min():.4f} / {U.max():.4f}")
-        print(f"Min/Max of P: {P.min():.4f} / {P.max():.4f}")
-        print(f"Min/Max of phi: {phi.min():.4f} / {phi.max():.4f}")
+
+    # Initialize fields
+    U = np.zeros((Nx, Ny, 2))  # Velocity field (2D vector field)
+    P = np.zeros((Nx, Ny))  # Pressure field
+
+    # Visualization of the phase field
+    plt.imshow(phi.T, extent=[0, Lx, 0, Ly], origin='lower', cmap='viridis')
+    plt.colorbar(label='Phase Field (phi)')
+    plt.title('Phase Field Visualization')
+    plt.xlabel('X-axis')
+    plt.ylabel('Y-axis')
+    plt.savefig(f'{login_dir}/initial_phase_field.png', bbox_inches='tight')
+    plt.clf()
+
+    # Create a directory for checkpoints
+    checkpoint_dir = os.path.join(login_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Save the configuration to a JSON file
+    params_file = os.path.join(login_dir, "simulation_parameters.json")
+    with open(params_file, 'w') as f:
+        json.dump(config, f, indent=4)
+    sys.stdout.write(f"Simulation parameters saved to {params_file}\n")
+
+    # Optional: restart from checkpoint
+    if restart_from is not None:
+        sys.stdout.write(f"Restarting from checkpoint: {restart_from}\n")
+        checkpoint_data = utils.load_checkpoint(restart_from)
+        
+        # Load simulation state
+        start_step = checkpoint_data['step']
+        phi = checkpoint_data['phi']
+        U = checkpoint_data['U']
+        P = checkpoint_data['P']
+        
+        sys.stdout.write(f"Loaded state from step {start_step}, continuing simulation...")
+    else:
+        # Initialize from scratch
+        start_step = 0
+
+    times = []
+    # Main simulation loop
+    for step in range(start_step, num_steps):
+        # Use dt_initial for the first 100 steps
+        # Compute derivatives and other terms
+        start_time = time.time()
+        current_dt = dt_initial if step < 100 else dt
+        surface_tension = utils.surface_tension_force(phi, epsilon, We, dx, dy)
+        surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
+        
+        U = update_velocity(U, P, surface_tension, current_dt, dx, dy)
+
+        # Project velocity to ensure continuity is satisfied
+        max_iterations = 1000 if step % 10 == 0 else 100
+        U = enforce_incompressibility(U, dx, dy, tolerance=1e-4, max_iterations=max_iterations)
+
+        # Add special handling for extreme divergence points
         divergence, max_div, mean_div = check_continuity(U, dx, dy)
-        print(f"Continuity check - Max |∇·U|: {max_div:.6f}, Mean |∇·U|: {mean_div:.6f}")
-        print(f"Time: {np.mean(times):.6f}")
+        if max_div > 5.0:
+            # Find locations of extreme divergence
+            extreme_mask = np.abs(divergence) > 5.0
+            if np.any(extreme_mask):
+                # Apply local smoothing to problematic areas
+                for i in range(2):
+                    smooth_field = U[..., i].copy()
+                    smooth_field[1:-1, 1:-1][extreme_mask[1:-1, 1:-1]] = (
+                        U[0:-2, 1:-1, i][extreme_mask[1:-1, 1:-1]] + 
+                        U[2:, 1:-1, i][extreme_mask[1:-1, 1:-1]] + 
+                        U[1:-1, 0:-2, i][extreme_mask[1:-1, 1:-1]] + 
+                        U[1:-1, 2:, i][extreme_mask[1:-1, 1:-1]]
+                    ) / 4.0
+                    U[..., i] = smooth_field
 
-    if step % 25 == 0:  # Plot every 25 steps
-        utils.create_joint_plot(
-            phi, U, P, surface_tension, current_dt, step, dx, dy,
-            save_path=f'{login_dir}/joint_plot_step_{step}.png'
-        )
+        # Apply no-slip boundary conditions
+        U = apply_velocity_boundary_conditions(U)
 
-    # Save checkpoint at specified intervals
-    # Save every 50 steps
-    if step % checkpoint_interval == 0:
-        utils.save_checkpoint(step, phi, U, P, directory=f"{login_dir}/checkpoints")
+        P = update_pressure(surface_tension, dx, dy)
+        P = utils.apply_pressure_boundary_conditions(P)
+        phi = update_phase(phi, U, current_dt, dx, dy)
+
+        # Apply contact angle boundary conditions
+        phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
+        end_time = time.time()
+        times.append(end_time - start_time)
+        
+        # Print or log results for analysis
+        if step % 10 == 0:  # Print every 10 steps
+            sys.stdout.write(f"Step {step}, Time {step * current_dt:.2f}")
+            sys.stdout.write(f"Min/Max of U: {U.min():.4f} / {U.max():.4f}")
+            sys.stdout.write(f"Min/Max of P: {P.min():.4f} / {P.max():.4f}")
+            sys.stdout.write(f"Min/Max of phi: {phi.min():.4f} / {phi.max():.4f}")
+            divergence, max_div, mean_div = check_continuity(U, dx, dy)
+            sys.stdout.write(f"Continuity check - Max |div(U)|: {max_div:.6f}, Mean |div(U)|: {mean_div:.6f}")
+            sys.stdout.write(f"Time: {np.mean(times):.6f}")
+
+        if step % 25 == 0:  # Plot every 25 steps
+            utils.create_joint_plot(
+                phi, U, P, surface_tension, current_dt, step, dx, dy,
+                save_path=f'{login_dir}/joint_plot_step_{step}.png'
+            )
+
+        # Save checkpoint at specified intervals
+        if step % checkpoint_interval == 0:
+            utils.save_checkpoint(step, phi, U, P, directory=f"{login_dir}/checkpoints")
+
+if __name__ == "__main__":
+    main()

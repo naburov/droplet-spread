@@ -1,0 +1,31 @@
+{
+    "physical_params": {
+        "rho": 1.0,
+        "Re1": 1000.0,
+        "Re2": 10.0,
+        "We": 10.0,
+        "Pe": 1.0,
+        "epsilon": 0.05,
+        "alpha": 1.0,
+        "phase_penalty": 1000.0,
+        "contact_angle": 120
+    },
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.0,
+        "Nx": 100,
+        "Ny": 100
+    },
+    "time_params": {
+        "dt": 0.001,
+        "t_max": 1.0,
+        "checkpoint_interval": 50,
+        "dt_initial": 0.0005
+    },
+    "initial_conditions": {
+        "droplet_radius": 0.2
+    },
+    "restart": {
+        "restart_from": null
+    }
+} 
