@@ -20,6 +20,7 @@ Pe = None
 epsilon = None
 phase_penalty = None
 contact_angle = None
+Fr = None
 
 def load_config(config_path=None):
     """
@@ -173,7 +174,7 @@ def check_continuity(U, dx, dy):
     
     return divergence, max_div, mean_div
 
-def update_velocity(U, p, surface_tension, current_dt, dx, dy):
+def update_velocity(U, p, surface_tension, current_dt, dx, dy, include_gravity=False):
     """Update the velocity field U based on the phase field phi."""
     grad_U = utils.gradient(U, dx, dy)  # Shape: (M, N, 2)
     lap_U = utils.laplacian(U, dx, dy)  # Shape: (M, N, 2)
@@ -197,6 +198,8 @@ def update_velocity(U, p, surface_tension, current_dt, dx, dy):
 
     # Right-hand side of the Navier-Stokes equation
     rhs_U = -p_grad + viscous_term - surface_tension + convective_term  # Shape: (M, N, 2)
+    if include_gravity:
+        rhs_U += (1 / Fr**2) * np.stack([np.zeros_like(U[..., 0]), -np.ones_like(U[..., 1])], axis=-1)
 
     # Update velocity field using explicit Euler
     U = U + current_dt * rhs_U  # Shape: (M, N, 2)
@@ -387,7 +390,7 @@ def main():
     config = load_config(args.config)
     
     # Access global variables
-    global phi, Re1, Re2, Pe, epsilon, phase_penalty, contact_angle
+    global phi, Re1, Re2, Pe, epsilon, phase_penalty, contact_angle, Fr
     
     # Extract parameters from config
     # Physical parameters
@@ -400,6 +403,8 @@ def main():
     alpha = config["physical_params"]["alpha"]
     phase_penalty = config["physical_params"]["phase_penalty"]
     contact_angle = config["physical_params"]["contact_angle"]
+    include_gravity = config["physical_params"]["include_gravity"]
+    Fr = config["physical_params"]["Fr"]
     
     # Grid setup
     Lx, Ly = config["grid_params"]["Lx"], config["grid_params"]["Ly"]
@@ -485,7 +490,7 @@ def main():
         surface_tension = utils.surface_tension_force(phi, epsilon, We, dx, dy)
         surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
         
-        U = update_velocity(U, P, surface_tension, current_dt, dx, dy)
+        U = update_velocity(U, P, surface_tension, current_dt, dx, dy, include_gravity=include_gravity)
 
         # Project velocity to ensure continuity is satisfied
         max_iterations = 1000 if step % 10 == 0 else 100
