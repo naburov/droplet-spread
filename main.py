@@ -268,12 +268,15 @@ def update_phase(phi, U, current_dt, dx, dy):
     lap_phi = utils.laplacian(phi, dx, dy)  # Shape: (Nx, Ny)
 
     # Step 4: Calculate the source term
-    source_term = (-utils.f(phi) + epsilon**2 * lap_phi) / Pe  # Shape: (Nx, Ny)
+    source_term = (-utils.f_2(phi) + epsilon**2 * lap_phi) / Pe  # Shape: (Nx, Ny)
 
     # Step 5: Right-hand side of the phase equation
     rhs_phi = -convective_term + source_term  # Shape: (Nx, Ny)
 
-    # Step 6: Update phase field using explicit Euler
+    # Step 6: Create Lagrangian multiplier
+    # lagrange_multiplier = (-utils.f(phi) + epsilon**2 * lap_phi) 
+
+    # Step 7: Update phase field using explicit Euler
     phi_new = phi + current_dt * (rhs_phi - penalization(phi, phase_penalty))  # Shape: (Nx, Ny)
 
     return phi_new  # Return the updated phase field 
@@ -358,6 +361,21 @@ def initialize_phase(Nx, Ny, radius):
     
     return phi
 
+def get_borders_of_droplet(phi):
+    """Get the  borders of the droplet."""
+    # Find the first and last non-zero elements in each row=
+    start_of_droplet = 0
+    end_of_droplet = phi.shape[0] - 1
+    for i in range(0, phi.shape[0]):
+        if phi[i, 0] > 0:
+            start_of_droplet = i
+            break
+    for i in range(phi.shape[0] - 1, 0, -1):
+        if phi[i, 0] > 0:
+            end_of_droplet = i
+            break
+    return start_of_droplet, end_of_droplet
+
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Droplet spreading simulation')
@@ -400,6 +418,8 @@ def main():
     
     # Restart information
     restart_from = config["restart"]["restart_from"]
+    if restart_from == "None":
+        restart_from = None
     
     # Create a directory for the experiment
     if args.output:
@@ -441,7 +461,7 @@ def main():
 
     # Optional: restart from checkpoint
     if restart_from is not None:
-        sys.stdout.write(f"Restarting from checkpoint: {restart_from}\n")
+        sys.stdout.write(f"Restarting from checkpoint: {restart_from} \n")
         checkpoint_data = utils.load_checkpoint(restart_from)
         
         # Load simulation state
@@ -450,7 +470,7 @@ def main():
         U = checkpoint_data['U']
         P = checkpoint_data['P']
         
-        sys.stdout.write(f"Loaded state from step {start_step}, continuing simulation...")
+        sys.stdout.write(f"Loaded state from step {start_step}, continuing simulation... \n")
     else:
         # Initialize from scratch
         start_step = 0
@@ -461,7 +481,7 @@ def main():
         # Use dt_initial for the first 100 steps
         # Compute derivatives and other terms
         start_time = time.time()
-        current_dt = dt_initial if step < 100 else dt
+        current_dt = dt_initial if step < 500 else dt
         surface_tension = utils.surface_tension_force(phi, epsilon, We, dx, dy)
         surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
         
@@ -502,17 +522,22 @@ def main():
         
         # Print or log results for analysis
         if step % 10 == 0:  # Print every 10 steps
-            sys.stdout.write(f"Step {step}, Time {step * current_dt:.2f}")
-            sys.stdout.write(f"Min/Max of U: {U.min():.4f} / {U.max():.4f}")
-            sys.stdout.write(f"Min/Max of P: {P.min():.4f} / {P.max():.4f}")
-            sys.stdout.write(f"Min/Max of phi: {phi.min():.4f} / {phi.max():.4f}")
+            sys.stdout.write(f"Step {step}, Time {step * current_dt:.2f} \n")
+            sys.stdout.write(f"Min/Max of U: {U.min():.4f} / {U.max():.4f} \n")
+            sys.stdout.write(f"Min/Max of P: {P.min():.4f} / {P.max():.4f} \n")
+            sys.stdout.write(f"Min/Max of phi: {phi.min():.4f} / {phi.max():.4f} \n")
             divergence, max_div, mean_div = check_continuity(U, dx, dy)
-            sys.stdout.write(f"Continuity check - Max |div(U)|: {max_div:.6f}, Mean |div(U)|: {mean_div:.6f}")
-            sys.stdout.write(f"Time: {np.mean(times):.6f}")
+            sys.stdout.write(f"Continuity check - Max |div(U)|: {max_div:.6f}, Mean |div(U)|: {mean_div:.6f} \n")
+            sys.stdout.write(f"Time: {np.mean(times):.6f} \n")
+            start_of_droplet, end_of_droplet = get_borders_of_droplet(phi)
+            mass = np.sum(phi[phi > 0])
+            sys.stdout.write(f"Droplet mass {mass} \n")
+            sys.stdout.write(f"Start/end of the droplet on the surface: {start_of_droplet} - {end_of_droplet} \n")
 
         if step % 25 == 0:  # Plot every 25 steps
+            mass = np.sum(phi[phi > 0])
             utils.create_joint_plot(
-                phi, U, P, surface_tension, current_dt, step, dx, dy,
+                phi, U, P, surface_tension, current_dt, step, dx, dy, mass,
                 save_path=f'{login_dir}/joint_plot_step_{step}.png'
             )
 

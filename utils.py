@@ -195,8 +195,8 @@ def solve_poisson_with_better_bc(rhs, dx, dy):
     
     return phi_flat.reshape((Nx, Ny))
 
-def f(phi):
-    """Double-well potential function.
+def f_1(phi):
+    """Double-well potential function with minimas at phi = 0 and phi = 1.
     
     Args:
         phi (np.ndarray): Phase field (shape: (Nx, Ny)).
@@ -206,7 +206,18 @@ def f(phi):
     """
     return phi**2 * (1 - phi)**2  # Shape: (Nx, Ny)
 
-def df(phi):
+def f_2(phi):
+    """Double-well potential function with minimas at phi = -1 and phi = 1.
+    
+    Args:
+        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
+    
+    Returns:
+        np.ndarray: Value of the double-well potential (shape: (Nx, Ny)).
+    """
+    return 1./4 * (phi**2 - 1)**2
+
+def df_1(phi):
     """Derivative of the double-well potential function.
     
     Args:
@@ -217,6 +228,16 @@ def df(phi):
     """
     return 2 * phi * (1 - phi) * (1 - 2 * phi)  # Shape: (Nx, Ny)
 
+def df_2(phi):
+    """Derivative of the double-well potential function.
+    
+    Args:
+        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
+    
+    Returns:
+        np.ndarray: Derivative of the double-well potential (shape: (Nx, Ny)).
+    """
+    return phi * (phi**2 - 1)  # Shape: (Nx, Ny)
 
 def calculate_reynolds_number(phi, Re1, Re2):
     """Calculate the Reynolds number based on the phase field.
@@ -372,7 +393,7 @@ def apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angl
     
     return sf
 
-def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, save_path=None):
+def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, mass, save_path=None):
     """Create a joint plot with multiple subplots."""
     # Calculate derived fields
     U_magnitude = np.sqrt(U[..., 0]**2 + U[..., 1]**2)
@@ -454,9 +475,10 @@ def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, save_path=No
     stats_text = f"Phase Field (phi):\n  Min: {phi.min():.5f}\n  Max: {phi.max():.5f}\n  Mean: {phi.mean():.5f}\n  Mass: {phi.sum():.5f}\n"
     stats_text += f"Velocity (U):\n  Min x: {U[..., 0].min():.5f}\n  Max x: {U[..., 0].max():.5f}\n  Min y: {U[..., 1].min():.5f}\n  Max y: {U[..., 1].max():.5f}\n  Max Speed: {U_magnitude.max():.5f}\n"
     stats_text += f"Pressure (P):\n  Min: {P.min():.5f}\n  Max: {P.max():.5f}\n  Mean: {P.mean():.5f}\n"
-    stats_text += f"Surface Tension:\n  Max Magnitude: {ST_magnitude.max():.5f}"
+    stats_text += f"Surface Tension:\n  Max Magnitude: {ST_magnitude.max():.5f}\n"
+    stats_text += f"Droplet mass: {mass:.5f}"
     
-    plt.figtext(0.01, 0.04, stats_text, fontsize=10, verticalalignment='bottom')
+    plt.figtext(0.01, 0.5, stats_text, fontsize=10, verticalalignment='bottom')
     
     fig.tight_layout(rect=[0, 0.20, 1, 0.95])
     
