@@ -11,6 +11,7 @@ from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
 import time 
 import sys
+from scipy.sparse import kron, identity, linalg
 
 # Global variables used by multiple functions
 phi = None
@@ -21,6 +22,8 @@ epsilon = None
 phase_penalty = None
 contact_angle = None
 Fr = None
+g = None
+atm_pressure = None
 
 def load_config(config_path=None):
     """
@@ -89,67 +92,49 @@ def load_config(config_path=None):
     
     return config
 
+
+def build_2d_laplacian_matrix(N, h=1.0, bc_type='dirichlet'):
+    """
+    Constructs the 2D Laplacian matrix using Kronecker product and scipy.diags,
+    with optional Dirichlet or Neumann boundary conditions.
+
+    Parameters:
+        N (int): Number of interior grid points per dimension
+        h (float): Grid spacing (default 1.0)
+        bc_type (str): 'dirichlet' or 'neumann'
+
+    Returns:
+        scipy.sparse.csr_matrix: Sparse Laplacian matrix of shape (N^2, N^2)
+    """
+    # 1D Laplacian
+    main_diag = -2 * np.ones(N)
+    off_diag = np.ones(N - 1)
+    T = diags([off_diag, main_diag, off_diag], [-1, 0, 1], shape=(N, N))
+
+    if bc_type == 'neumann':
+        T = T.tolil()
+        T[0, 1] = 2  # Left boundary mirror
+        T[-1, -2] = 2  # Right boundary mirror
+        T = T.tocsr()
+
+    I = identity(N)
+    A = (kron(I, T) + kron(T, I)) / h**2
+    return A
+
 def solve_poisson(rhs, dx, dy):
-    """Solve the Poisson equation ∇²φ = f with a custom RHS."""
-    Nx, Ny = rhs.shape
-    phi = np.zeros((Nx, Ny))
-
-    # Create the coefficient matrix for the finite difference method
-    diagonals = [
-        -2 * (1/dx**2 + 1/dy**2) * np.ones(Nx * Ny),  # Main diagonal
-        (1/dx**2) * np.ones(Nx * Ny - 1),            # Upper diagonal
-        (1/dx**2) * np.ones(Nx * Ny - 1),            # Lower diagonal
-        (1/dy**2) * np.ones(Nx * (Ny-1)),           # Far upper diagonal
-        (1/dy**2) * np.ones(Nx * (Ny-1))            # Far lower diagonal
-    ]
-
-    offsets = [0, 1, -1, Nx, -Nx]
-
-    # Adjust for boundary conditions
-    for i in range(1, Ny):
-        diagonals[1][i * Nx - 1] = 0  # No connection between rows
-
-    # Create the sparse matrix
-    A = diags(diagonals, offsets).tocsc()
-
-    # Apply boundary conditions
-    # Apply Neumann boundary conditions (zero gradient) at all boundaries
-    # For the left and right boundaries
-    for i in range(Ny):
-        # Left boundary: phi[0, i] = phi[1, i]
-        diagonals[0][i * Nx] += diagonals[1][i * Nx]
-        diagonals[1][i * Nx] = 0
-        rhs[0, i] = 0
-        
-        # Right boundary: phi[Nx-1, i] = phi[Nx-2, i]
-        diagonals[0][(i + 1) * Nx - 1] += diagonals[2][(i + 1) * Nx - 2]
-        diagonals[2][(i + 1) * Nx - 2] = 0
-        rhs[Nx-1, i] = 0
+    """Solve the Poisson equation ∇²φ = f with Neumann boundary conditions."""
+    A = utils.build_2d_laplacian_matrix_with_variable_steps(rhs.shape[0], rhs.shape[1], dx, dy, 'neumann')
     
-    # For the top and bottom boundaries
-    for j in range(Nx):
-        # Top boundary: phi[j, 0] = phi[j, 1]
-        diagonals[0][j] += diagonals[3][j]
-        diagonals[3][j] = 0
-        rhs[j, 0] = 0
-        
-        # Bottom boundary: phi[j, Ny-1] = phi[j, Ny-2]
-        diagonals[0][j + (Ny-1) * Nx] += diagonals[4][j + (Ny-2) * Nx]
-        diagonals[4][j + (Ny-2) * Nx] = 0
-        rhs[j, Ny-1] = 0
-
-    # Ensure at least one Dirichlet condition
-    # Top boundary: fixed pressure
-    for j in range(Nx):
-        diagonals[0][j] = 1.0
-        diagonals[3][j] = 0.0
-        rhs[j, 0] = 0.0
-
+    # Reshape right-hand side to match matrix equation
+    rhs_flat = np.transpose(rhs).flatten(order='C')  # Use C-style ordering (row-major)
+    
     # Solve the linear system
-    rhs_flat = rhs.flatten()
-    phi_flat = spsolve(A, rhs_flat)
-    phi = phi_flat.reshape((Nx, Ny))
-
+    phi_flat = linalg.spsolve(A, rhs_flat)
+    
+    # Reshape solution to 2D - use proper ordering
+    phi = phi_flat.reshape((rhs.shape[1], rhs.shape[0]), order='C')
+    phi = np.transpose(phi)
+    
     return phi
 
 def compute_viscous_term(U, dx, dy, Re):
@@ -238,7 +223,15 @@ def update_pressure(surface_tension, dx, dy, rho1, rho2):
     sf_grad = utils.numerical_derivative(surface_tension[..., 0], axis=0, h=dx) +  \
               utils.numerical_derivative(surface_tension[..., 1], axis=1, h=dy)
     rho = utils.calculate_density(phi, rho1, rho2)
-    P = solve_poisson(sf_grad / rho, dx, dy) 
+    sf_grad = sf_grad / rho
+
+    # Apply boundary conditions
+    sf_grad[:, 0] = np.sum(rho * g * dy, axis=-1)
+    sf_grad[:, 0] += atm_pressure
+
+    sf_grad[:, -1] = atm_pressure
+
+    P = solve_poisson(sf_grad, dx, dy) 
     return P
 
 def penalization(phi, alpha):
@@ -394,7 +387,7 @@ def main():
     config = load_config(args.config)
     
     # Access global variables
-    global phi, Re1, Re2, Pe, epsilon, phase_penalty, contact_angle, Fr
+    global phi, Re1, Re2, Pe, epsilon, phase_penalty, contact_angle, Fr, g, atm_pressure
     
     # Extract parameters from config
     # Physical parameters
@@ -409,6 +402,8 @@ def main():
     phase_penalty = config["physical_params"]["phase_penalty"]
     contact_angle = config["physical_params"]["contact_angle"]
     include_gravity = config["physical_params"]["include_gravity"]
+    g = config["physical_params"]["g"]
+    atm_pressure = config["physical_params"]["atm_pressure"]
     Fr = config["physical_params"]["Fr"]
     
     # Grid setup
@@ -522,7 +517,7 @@ def main():
         U = apply_velocity_boundary_conditions(U)
 
         P = update_pressure(surface_tension, dx, dy, rho1, rho2)
-        P = utils.apply_pressure_boundary_conditions(P)
+        # P = utils.apply_pressure_boundary_conditions(P, g, phi, rho1, rho2, dy, atm_pressure)
         phi = update_phase(phi, U, current_dt, dx, dy)
 
         # Apply contact angle boundary conditions

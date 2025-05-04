@@ -9,6 +9,7 @@ from scipy.ndimage import gaussian_filter
 import os
 from datetime import datetime
 from scipy.sparse.linalg import cg
+from scipy.sparse import kron, identity
 
 # import jax.numpy as jnp
 # from jax import jit
@@ -174,6 +175,55 @@ def solve_poisson(rhs):
 
     return phi
 
+def build_2d_laplacian_matrix_with_variable_steps(Nx, Ny, dx, dy, bc_type='dirichlet'):
+    """
+    Constructs the 2D Laplacian matrix using Kronecker product with variable spatial steps
+    in x and y directions, supporting different boundary conditions.
+    
+    Parameters:
+        Nx (int): Number of interior grid points in x-direction
+        Ny (int): Number of interior grid points in y-direction
+        dx (float): Grid spacing in x-direction
+        dy (float): Grid spacing in y-direction
+        bc_type (str): 'dirichlet' or 'neumann'
+    
+    Returns:
+        scipy.sparse.csr_matrix: Sparse Laplacian matrix of shape (Nx*Ny, Nx*Ny)
+    """
+    # 1D Laplacian for x-direction
+    main_diag_x = -2 * np.ones(Nx) / (dx**2)
+    off_diag_x = np.ones(Nx - 1) / (dx**2)
+    Tx = diags([off_diag_x, main_diag_x, off_diag_x], [-1, 0, 1], shape=(Nx, Nx))
+    
+    # 1D Laplacian for y-direction
+    main_diag_y = -2 * np.ones(Ny) / (dy**2)
+    off_diag_y = np.ones(Ny - 1) / (dy**2)
+    Ty = diags([off_diag_y, main_diag_y, off_diag_y], [-1, 0, 1], shape=(Ny, Ny))
+    
+    # Apply boundary conditions
+    Tx = Tx.tolil()
+    Tx[0, 1] = 2 / (dx**2)  # Left boundary mirror
+    Tx[-1, -2] = 2 / (dx**2)  # Right boundary mirror
+    Tx = Tx.tocsr()
+        
+    Ty = Ty.tolil()
+    Ty[0, 0] = 1.0
+    Ty[0, 1] = 0.0  
+    
+    Ty[-1, -1] = 1.0
+    Ty[-1, -2] = 0.0
+    Ty = Ty.tocsr()
+    
+    # Create identity matrices
+    Ix = identity(Nx)
+    Iy = identity(Ny)
+    
+    # Combine using Kronecker products to create 2D Laplacian
+    A = kron(Iy, Tx) + kron(Ty, Ix)
+    
+    return A
+
+
 def solve_poisson_with_better_bc(rhs, dx, dy):
     """Improved Poisson solver with properly enforced boundary conditions"""
     Nx, Ny = rhs.shape[0], rhs.shape[1]
@@ -314,7 +364,7 @@ def apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=90):
     
     return phi_new 
 
-def apply_pressure_boundary_conditions(P):
+def apply_pressure_boundary_conditions(P, g, phi, rho1, rho2, dy, atm_pressure=0.0):
     """Apply boundary conditions to the pressure field.
     
     Args:
@@ -325,12 +375,14 @@ def apply_pressure_boundary_conditions(P):
     """
     # Create a copy of the pressure field to avoid modifying the original
     P_new = P.copy()
-    
+    rho = calculate_density(phi, rho1, rho2)
+
     # Bottom boundary (wall): Zero gradient (Neumann condition)
-    P_new[:, 0] = P_new[:, 1]
+    P_new[:, 0] = np.sum(rho * g * dy, axis=-1) + atm_pressure
+    P_new[:, 0] *= np.where(phi[:, 0] < 0, 1, -1)
     
     # Top boundary (open): Fixed value (Dirichlet condition)
-    P_new[:, -1] = 0.0
+    P_new[:, -1] = atm_pressure
     
     # Left and right boundaries: Zero gradient (Neumann condition)
     P_new[0, :] = P_new[1, :]
