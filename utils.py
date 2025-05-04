@@ -256,6 +256,23 @@ def calculate_reynolds_number(phi, Re1, Re2):
 
     return Re  # Return the calculated Reynolds number 
 
+def calculate_density(phi, rho1, rho2):
+    """Calculate the density based on the phase field.
+    
+    Args:
+        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
+        rho1 (float): Density for phase 1.
+        rho2 (float): Density for phase 2.
+    
+    Returns:
+        np.ndarray: Calculated density (shape: (Nx, Ny)).
+    """
+        # Calculate the Reynolds number using the provided formula
+    phi_mapped = (phi + 1) / 2.0
+    rho = 1 / ((1 + phi_mapped) / (2 * rho1) + (1 - phi_mapped) / (2 * rho2))  # Shape: (Nx, Ny)
+
+    return rho  # Return the calculated density 
+
 def apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=90):
     """Apply contact angle boundary conditions to the phase field.
     

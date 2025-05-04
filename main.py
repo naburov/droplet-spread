@@ -174,13 +174,16 @@ def check_continuity(U, dx, dy):
     
     return divergence, max_div, mean_div
 
-def update_velocity(U, p, surface_tension, current_dt, dx, dy, include_gravity=False):
+def update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=False):
     """Update the velocity field U based on the phase field phi."""
     grad_U = utils.gradient(U, dx, dy)  # Shape: (M, N, 2)
     lap_U = utils.laplacian(U, dx, dy)  # Shape: (M, N, 2)
 
     # Calculate the Reynolds number
     Re = utils.calculate_reynolds_number(phi, Re1, Re2)
+
+    # Calculate the density
+    rho = utils.calculate_density(phi, rho1, rho2)
 
     # Calculate pressure gradient
     p_grad = utils.gradient(p, dx, dy) # Shape: (M, N, 2)
@@ -202,7 +205,7 @@ def update_velocity(U, p, surface_tension, current_dt, dx, dy, include_gravity=F
         rhs_U += (1 / Fr**2) * np.stack([np.zeros_like(U[..., 0]), -np.ones_like(U[..., 1])], axis=-1)
 
     # Update velocity field using explicit Euler
-    U = U + current_dt * rhs_U  # Shape: (M, N, 2)
+    U = (U + current_dt * rhs_U) / (np.stack([rho, rho], axis=-1) + 1e-6)  # Shape: (M, N, 2)
 
     return U
 
@@ -230,11 +233,12 @@ def apply_velocity_boundary_conditions(U):
     
     return U_new 
 
-def update_pressure(surface_tension, dx, dy):
+def update_pressure(surface_tension, dx, dy, rho1, rho2):
     """Update the pressure field P based on the velocity field U and phase field phi."""
     sf_grad = utils.numerical_derivative(surface_tension[..., 0], axis=0, h=dx) +  \
               utils.numerical_derivative(surface_tension[..., 1], axis=1, h=dy)
-    P = solve_poisson(sf_grad, dx, dy) 
+    rho = utils.calculate_density(phi, rho1, rho2)
+    P = solve_poisson(sf_grad / rho, dx, dy) 
     return P
 
 def penalization(phi, alpha):
@@ -394,7 +398,8 @@ def main():
     
     # Extract parameters from config
     # Physical parameters
-    rho = config["physical_params"]["rho"]
+    rho1 = config["physical_params"]["rho1"]
+    rho2 = config["physical_params"]["rho2"]
     Re1 = config["physical_params"]["Re1"]
     Re2 = config["physical_params"]["Re2"]
     We = config["physical_params"]["We"]
@@ -490,7 +495,7 @@ def main():
         surface_tension = utils.surface_tension_force(phi, epsilon, We, dx, dy)
         surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
         
-        U = update_velocity(U, P, surface_tension, current_dt, dx, dy, include_gravity=include_gravity)
+        U = update_velocity(U, P, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=include_gravity)
 
         # Project velocity to ensure continuity is satisfied
         max_iterations = 1000 if step % 10 == 0 else 100
@@ -516,7 +521,7 @@ def main():
         # Apply no-slip boundary conditions
         U = apply_velocity_boundary_conditions(U)
 
-        P = update_pressure(surface_tension, dx, dy)
+        P = update_pressure(surface_tension, dx, dy, rho1, rho2)
         P = utils.apply_pressure_boundary_conditions(P)
         phi = update_phase(phi, U, current_dt, dx, dy)
 
