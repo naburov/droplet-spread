@@ -3,15 +3,17 @@
         "rho1": 1.0,
         "rho2": 10.0,
         "Re1": 1000.0,
-        "Re2": 10.0,
+        "Re2": 100.0,
         "We": 10.0,
         "Pe": 1.0,
-        "epsilon": 0.05,
+        "epsilon": 0.03,
         "alpha": 1.0,
         "phase_penalty": 1000.0,
         "contact_angle": 60,
         "include_gravity": true,
-        "Fr": 10.1
+        "Fr": 10.1,
+        "g": 1.0,
+        "atm_pressure": 1.0
     },
     "grid_params": {
         "Lx": 1.0,
@@ -21,12 +23,12 @@
     },
     "time_params": {
         "dt": 0.0007,
-        "t_max": 1.0,
+        "t_max": 5.0,
         "checkpoint_interval": 50,
         "dt_initial": 0.0007
     },
     "initial_conditions": {
-        "droplet_radius": 0.2
+        "droplet_radius": 0.25
     },
     "restart": {
         "restart_from": "None"
