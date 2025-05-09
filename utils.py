@@ -27,21 +27,13 @@ def numerical_derivative(f, axis=0, h=1e-5):
 
 def laplacian(f, dx=1e-5, dy=1e-5):
     """Calculate the Laplacian of f at all points in a 2D field using finite differences."""
-    lap = np.zeros_like(f)
     
     # Interior points using finite difference
-    lap[1:-1, 1:-1] = (
-        (f[2:, 1:-1] - 2*f[1:-1, 1:-1] + f[:-2, 1:-1]) / (dx**2) +  # x-direction
-        (f[1:-1, 2:] - 2*f[1:-1, 1:-1] + f[1:-1, :-2]) / (dy**2)    # y-direction
-    )
-    
-    # Handle boundaries (Neumann condition: zero-gradient)
-    lap[:, 0] = lap[:, 1]      # Bottom boundary (y=0) 
-    lap[:, -1] = lap[:, -2]    # Top boundary (y=max)
-    lap[0, :] = lap[1, :]      # Left boundary (x=0)
-    lap[-1, :] = lap[-2, :]    # Right boundary (x=max)
-    
-    return lap
+    f_padded = np.pad(f.copy(), ((1, 1), (1, 1)), mode="edge")
+    d2x = (f_padded[1:-1, 2:] - 2*f_padded[1:-1, 1:-1] + f_padded[1:-1, :-2]) / dx**2
+    d2y = (f_padded[2:, 1:-1] - 2*f_padded[1:-1, 1:-1] + f_padded[:-2, 1:-1]) / dy**2
+
+    return d2x + d2y
 
 def divergence(f, dx, dy):
     """Calculate the divergence of a 2D vector field f at all points."""
@@ -68,7 +60,7 @@ def norm(f):
     """Calculate the norm of a 2D vector field f at all points."""
     return np.sqrt(f[:, :, 0]**2 + f[:, :, 1]**2)
 
-def surface_tension_force(phi, epsilon, We, dx, dy):
+def surface_tension_force(phi, epsilon, We1, We2, dx, dy):
     """Calculate the surface tension force based on the phase field.
     
     The surface tension force is given by:
@@ -77,15 +69,19 @@ def surface_tension_force(phi, epsilon, We, dx, dy):
     """
     # Step 1: Calculate the curvature using the curvature function
     curvature_value = improved_curvature(phi, dx, dy)  # Shape: (M, N)
+    curvature_value = np.stack([curvature_value, curvature_value], axis=-1)
 
     # Step 2: Calculate the gradient of phi
     grad_phi = gradient(phi, dx, dy)  # Shape: (M, N, 2)
 
     # Step 3: Calculate the norm of the gradient
     norm_grad_phi = norm(grad_phi)  # Shape: (M, N) 
+    norm_grad_phi = np.stack([norm_grad_phi, norm_grad_phi], axis=-1)
+    We = calculate_weber_number(phi, We1, We2)
+    We = np.stack([We, We], axis=-1)
 
     # Step 4: Calculate the surface tension force
-    tension_force = (3 * np.sqrt(2) * epsilon / (4 * We)) * curvature_value[..., np.newaxis] * norm_grad_phi[..., np.newaxis] * grad_phi  # Shape: (M, N, 2)
+    tension_force = (3 * np.sqrt(2) * epsilon / (4 * We)) * curvature_value * norm_grad_phi * grad_phi  # Shape: (M, N, 2)
 
     return tension_force  # Shape: (M, N, 2)
 
@@ -132,48 +128,9 @@ def improved_curvature(phi, dx, dy):
     div_n = numerical_derivative(n_x, axis=0, h=dx) + numerical_derivative(n_y, axis=1, h=dy)
     
     # Apply smoothing to curvature field
-    div_n = gaussian_filter(div_n, sigma=1.0)
+    # div_n = gaussian_filter(div_n, sigma=1.0)
     
     return div_n
-
-def solve_poisson(rhs):
-    """Solve the Poisson equation ∇²φ = f with a custom RHS.
-    
-    Args:
-        rhs (np.ndarray): Right-hand side of the Poisson equation (shape: (Nx, Ny)).
-        dx (float): Grid spacing in the x-direction.
-        dy (float): Grid spacing in the y-direction.
-    
-    Returns:
-        np.ndarray: Solution to the Poisson equation (shape: (Nx, Ny)).
-    """
-    Nx, Ny = rhs.shape[0], rhs.shape[1]
-    phi = np.zeros((Nx, Ny))  # Initialize the solution array
-
-    # Create the coefficient matrix for the finite difference method
-    diagonals = [
-        -2 * np.ones(Nx * Ny),  # Main diagonal
-        np.ones(Nx * Ny - 1),   # Upper diagonal
-        np.ones(Nx * Ny - 1),   # Lower diagonal
-    ]
-
-    # Adjust for the boundary conditions (assuming Dirichlet conditions)
-    for i in range(1, Ny):
-        diagonals[1][i * Nx - 1] = 0  # No connection between rows
-
-    # Create the sparse matrix
-    A = diags(diagonals, [0, 1, -1]).tocsc()
-
-    # Reshape the RHS to a 1D array
-    rhs_flat = rhs.flatten()
-
-    # Solve the linear system
-    # phi_flat = spsolve(A, rhs_flat, use_umfpack=True)
-    phi_flat = cg(A, rhs_flat, tol=1e-10, maxiter=1000)[0]
-    # Reshape the solution back to 2D
-    phi = phi_flat.reshape((Nx, Ny))
-
-    return phi
 
 def build_2d_laplacian_matrix_with_variable_steps(Nx, Ny, dx, dy, bc_type='dirichlet'):
     """
@@ -229,16 +186,33 @@ def solve_poisson_with_better_bc(rhs, dx, dy):
     Nx, Ny = rhs.shape[0], rhs.shape[1]
     
     # Create A matrix with proper coefficients based on grid spacing
-    diagonals = [
-        -2 * (1/dx**2 + 1/dy**2) * np.ones(Nx * Ny),  # Main diagonal
-        (1/dx**2) * np.ones(Nx * Ny - 1),            # Upper diagonal
-        (1/dx**2) * np.ones(Nx * Ny - 1),            # Lower diagonal
-        (1/dy**2) * np.ones(Nx * (Ny-1)),           # Far upper diagonal
-        (1/dy**2) * np.ones(Nx * (Ny-1))            # Far lower diagonal
-    ]
+        # 1D Laplacian for x-direction
+    main_diag_x = -2 * np.ones(Nx) / (dx**2)
+    off_diag_x = np.ones(Nx - 1) / (dx**2)
+    Tx = diags([off_diag_x, main_diag_x, off_diag_x], [-1, 0, 1], shape=(Nx, Nx))
     
-    offsets = [0, 1, -1, Nx, -Nx]
-    A = diags(diagonals, offsets).tocsc()
+    # 1D Laplacian for y-direction
+    main_diag_y = -2 * np.ones(Ny) / (dy**2)
+    off_diag_y = np.ones(Ny - 1) / (dy**2)
+    Ty = diags([off_diag_y, main_diag_y, off_diag_y], [-1, 0, 1], shape=(Ny, Ny))
+
+    # Apply boundary conditions
+    Tx = Tx.tolil()
+    Tx[0, 1] = 2 / (dx**2)  # Left boundary mirror
+    Tx[-1, -2] = 2 / (dx**2)  # Right boundary mirror
+    Tx = Tx.tocsr()
+        
+    Ty = Ty.tolil()
+    Ty[0, 1] = 2 / (dy**2)
+    Ty[-1, -2] = 2 / (dy**2)
+    Ty = Ty.tocsr()
+    
+    # Create identity matrices
+    Ix = identity(Nx)
+    Iy = identity(Ny)
+    
+    # Combine using Kronecker products to create 2D Laplacian
+    A = kron(Iy, Tx) + kron(Ty, Ix)
     
     # Use a direct solver with more precision
     phi_flat = spsolve(A, rhs.flatten(), use_umfpack=True)
@@ -302,9 +276,25 @@ def calculate_reynolds_number(phi, Re1, Re2):
     """
     # Calculate the Reynolds number using the provided formula
     phi_mapped = (phi + 1) / 2.0
-    Re = 1 / ((1 + phi_mapped) / (2 * Re1) + (1 - phi_mapped) / (2 * Re2))  # Shape: (Nx, Ny)
+    Re = 1 / ((1 + phi_mapped) / (2 * Re2) + (1 - phi_mapped) / (2 * Re1))  # Shape: (Nx, Ny)
 
     return Re  # Return the calculated Reynolds number 
+
+def calculate_weber_number(phi, We1, We2):
+    """Calculate the Weber number based on the phase field.
+    
+    Args:
+        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
+        We1 (float): Weber number for phase 1.
+        We2 (float): Weber number for phase 2.
+    
+    Returns:
+        np.ndarray: Calculated Weber number (shape: (Nx, Ny)).
+    """
+    phi_mapped = (phi + 1) / 2.0
+    We = 1 / ((1 + phi_mapped) / (2 * We2) + (1 - phi_mapped) / (2 * We1))  # Shape: (Nx, Ny)
+
+    return We  # Return the calculated Weber number 
 
 def calculate_density(phi, rho1, rho2):
     """Calculate the density based on the phase field.
@@ -319,7 +309,7 @@ def calculate_density(phi, rho1, rho2):
     """
         # Calculate the Reynolds number using the provided formula
     phi_mapped = (phi + 1) / 2.0
-    rho = 1 / ((1 + phi_mapped) / (2 * rho1) + (1 - phi_mapped) / (2 * rho2))  # Shape: (Nx, Ny)
+    rho = 1 / ((1 + phi_mapped) / (2 * rho2) + (1 - phi_mapped) / (2 * rho1))  # Shape: (Nx, Ny)
 
     return rho  # Return the calculated density 
 
@@ -462,13 +452,13 @@ def apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angl
     
     return sf
 
-def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, mass, save_path=None):
+def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, mass, rho1, rho2, save_path=None):
     """Create a joint plot with multiple subplots."""
     # Calculate derived fields
     U_magnitude = np.sqrt(U[..., 0]**2 + U[..., 1]**2)
-    P_grad = np.sqrt(numerical_derivative(P, axis=0, h=dx)**2 + 
-                     numerical_derivative(P, axis=1, h=dy)**2)
+    divergence = numerical_derivative(U[..., 0], axis=0, h=dx) + numerical_derivative(U[..., 1], axis=1, h=dy)
     ST_magnitude = np.sqrt(surface_tension[..., 0]**2 + surface_tension[..., 1]**2)
+    rho = calculate_density(phi, rho1, rho2)
     
     # Setup the figure with more space at bottom for text
     fig = plt.figure(figsize=(18, 14))  # Increased height
@@ -521,7 +511,7 @@ def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, mass, save_p
     
     # Plot 5: Pressure Field
     ax5 = fig.add_subplot(gs[1, 1])
-    im5 = ax5.imshow(P.T, origin='lower', extent=[0, 1, 0, 1], cmap='coolwarm')
+    im5 = ax5.imshow(-P.T, origin='lower', extent=[0, 1, 0, 1], cmap='coolwarm')
     ax5.contour(X, Y, phi.T, levels=[0], colors='k', linewidths=2)
     fig.colorbar(im5, ax=ax5, label='Pressure')
     ax5.set_title('Pressure Field')
@@ -530,10 +520,10 @@ def create_joint_plot(phi, U, P, surface_tension, dt, step, dx, dy, mass, save_p
     
     # Plot 6: Pressure Gradient Magnitude
     ax6 = fig.add_subplot(gs[1, 2])
-    im6 = ax6.imshow(P_grad.T, origin='lower', extent=[0, 1, 0, 1], cmap='viridis')
-    ax6.contour(X, Y, phi.T, levels=[0], colors='r', linewidths=2)
-    fig.colorbar(im6, ax=ax6, label='Gradient Magnitude')
-    ax6.set_title('Pressure Gradient Magnitude')
+    im6 = ax6.imshow(rho.T, origin='lower', extent=[0, 1, 0, 1], cmap='viridis')
+    ax6.contour(X, Y, phi.T, levels=[0], colors='k', linewidths=2)
+    fig.colorbar(im6, ax=ax6, label='Density')
+    ax6.set_title('Density')
     ax6.set_xlabel('X-axis')
     ax6.set_ylabel('Y-axis')
     

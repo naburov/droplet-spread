@@ -161,40 +161,41 @@ def check_continuity(U, dx, dy):
 
 def update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=False):
     """Update the velocity field U based on the phase field phi."""
-    grad_U = utils.gradient(U, dx, dy)  # Shape: (M, N, 2)
-    lap_U = utils.laplacian(U, dx, dy)  # Shape: (M, N, 2)
-
-    # Calculate the Reynolds number
+    # Calculate the Reynolds number and density
     Re = utils.calculate_reynolds_number(phi, Re1, Re2)
-
-    # Calculate the density
     rho = utils.calculate_density(phi, rho1, rho2)
+    rho_stacked = np.stack([rho, rho], axis=-1) + 1e-6
 
-    # Calculate pressure gradient
-    p_grad = utils.gradient(p, dx, dy) # Shape: (M, N, 2)
-
-    # Calculate the viscous term
-    # viscous_term = (1 / Re)[..., np.newaxis] * (lap_U + np.transpose(lap_U, (1, 0, 2)))  # Shape: (M, N, 2)
+    # Calculate gradients and terms
+    grad_U = utils.gradient(U, dx, dy)
+    p_grad = utils.gradient(p, dx, dy)
+    
+    # Calculate viscous term with proper scaling
     viscous_term = compute_viscous_term(U, dx, dy, Re)
+    
+    # Calculate convective term (in conservative form)
+    convective_term = np.zeros_like(U)
+    convective_term[..., 0] = (U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1])
+    convective_term[..., 1] = (U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1])
 
-    # Calculate the convective term
-    convective_term = np.zeros_like(U)  # Shape: (M, N, 2)
+    # Combine terms with proper density scaling
+    rhs_U = (
+        -p_grad / rho_stacked +  # Pressure term
+        viscous_term / rho_stacked +  # Viscous term
+        -surface_tension / rho_stacked +  # Surface tension
+        -convective_term  # Convective term (already includes velocity)
+    )
 
-    # Corrected convective term calculations
-    convective_term[..., 0] = U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1]  # u * ∂u/∂x + v * ∂u/∂y
-    convective_term[..., 1] = U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1]  # u * ∂v/∂x + v * ∂v/∂y
-
-    # Right-hand side of the Navier-Stokes equation
-    rhs_U = -p_grad + viscous_term - surface_tension + convective_term  # Shape: (M, N, 2)
+    # Add gravity if included
     if include_gravity:
-        rhs_U += (1 / Fr**2) * np.stack([np.zeros_like(U[..., 0]), -np.ones_like(U[..., 1])], axis=-1)
+        rhs_U += (1 / Fr) * np.stack([np.zeros_like(U[..., 0]), -np.ones_like(U[..., 1])], axis=-1)
 
     # Update velocity field using explicit Euler
-    U = (U + current_dt * rhs_U) / (np.stack([rho, rho], axis=-1) + 1e-6)  # Shape: (M, N, 2)
-
+    U = U + current_dt * rhs_U
+    
     return U
 
-def apply_velocity_boundary_conditions(U):
+def apply_velocity_boundary_conditions(U, beta, dy):
     """Apply physically appropriate boundary conditions to velocity field.
     
     Args:
@@ -206,15 +207,18 @@ def apply_velocity_boundary_conditions(U):
     # Make a copy to avoid modifying the original array
     U_new = U.copy()
     
-    # Bottom boundary (solid wall): No-slip condition
-    U_new[:, 0, :] = 0.0
-    
+    # Bottom boundary (solid wall): Slip condition
+    U_new[:, 0, 1] = 0.0 # y
+    U_new[:, 0, 0] = U_new[:, 1, 0] - dy * 1/beta * U_new[:, 1, 0]  # x
+
     # Top boundary (open atmosphere): Zero-gradient condition
     U_new[:, -1, :] = U_new[:, -2, :]
     
     # Left and right boundaries: Zero-gradient condition
-    U_new[0, :, :] = U_new[1, :, :]
-    U_new[-1, :, :] = U_new[-2, :, :]
+    # U_new[0, :, :] = U_new[1, :, :]
+    # U_new[-1, :, :] = U_new[-2, :, :]
+    U_new[0, :, :] = 0.0
+    U_new[-1, :, :] = 0.0
     
     return U_new 
 
@@ -223,7 +227,7 @@ def update_pressure(surface_tension, dx, dy, rho1, rho2):
     sf_grad = utils.numerical_derivative(surface_tension[..., 0], axis=0, h=dx) +  \
               utils.numerical_derivative(surface_tension[..., 1], axis=1, h=dy)
     rho = utils.calculate_density(phi, rho1, rho2)
-    sf_grad = sf_grad / rho
+    sf_grad = sf_grad
 
     # Apply boundary conditions
     sf_grad[:, 0] = np.sum(rho * g * dy, axis=-1)
@@ -245,41 +249,55 @@ def penalization(phi, alpha):
     
     return alpha * penalty
 
-def update_phase(phi, U, current_dt, dx, dy):
-    """Update the phase field using the explicit Euler method.
+def update_phase(phi, U, current_dt, dx, dy, contact_angle):
+    """Update the phase field using the explicit Euler method with interface thickness control.
     
     Args:
         phi (np.ndarray): Current phase field (shape: (Nx, Ny)).
         U (np.ndarray): Velocity field (shape: (Nx, Ny, 2)).
         Pe (float): Peclet number.
-        epsilon (float): Small parameter for the equations.
-
-    Returns:
-        np.ndarray: Updated phase field (shape: (Nx, Ny)).
+        epsilon (float): Interface thickness parameter.
     """
     # Step 1: Calculate the gradient of phi
     grad_phi = utils.gradient(phi, dx, dy)  # Shape: (Nx, Ny, 2)
+    # grad_phi_mag = np.sqrt(grad_phi[..., 0]**2 + grad_phi[..., 1]**2)
 
     # Step 2: Calculate the convective term
     convective_term = np.zeros_like(phi)  # Shape: (Nx, Ny)
-    convective_term += U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]  # u * (∂phi/∂x + ∂phi/∂y)
+    convective_term += U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]
 
     # Step 3: Calculate the Laplacian of phi
-    lap_phi = utils.laplacian(phi, dx, dy)  # Shape: (Nx, Ny)
+    lap_phi = utils.laplacian(phi, dx, dy)
 
-    # Step 4: Calculate the source term
-    source_term = (-utils.f_2(phi) + epsilon**2 * lap_phi) / Pe  # Shape: (Nx, Ny)
+    # Step 4: Calculate stabilized chemical potential with interface thickness control
+    # This formulation helps maintain the interface thickness
+    chemical_potential = utils.df_2(phi) - epsilon**2 * lap_phi
+    lagrange_multiplier = np.mean(chemical_potential)
+    source_term = -1/Pe * (chemical_potential - lagrange_multiplier)
 
-    # Step 5: Right-hand side of the phase equation
-    rhs_phi = -convective_term + source_term  # Shape: (Nx, Ny)
+    # Add stabilization term to maintain interface thickness
+    # stabilization = epsilon * (grad_phi_mag - 1/epsilon) * (grad_phi_mag > 1/epsilon)
+    # chemical_potential += stabilization
 
-    # Step 6: Create Lagrangian multiplier
-    # lagrange_multiplier = (-utils.f(phi) + epsilon**2 * lap_phi) 
+    # Step 5: Calculate the source term using the stabilized chemical potential
+    # chem_grad = utils.gradient(chemical_potential, dx, dy)
+    # div_chem = utils.numerical_derivative(chem_grad[..., 0], axis=0, h=dx) + \
+    #            utils.numerical_derivative(chem_grad[..., 1], axis=1, h=dy)
+    # source_term = div_chem / Pe
 
-    # Step 7: Update phase field using explicit Euler
-    phi_new = phi + current_dt * (rhs_phi - penalization(phi, phase_penalty))  # Shape: (Nx, Ny)
+    # Step 6: Right-hand side of the phase equation
+    rhs_phi = -convective_term + source_term
 
-    return phi_new  # Return the updated phase field 
+    # Step 7: Update phase field
+    phi = phi + current_dt * rhs_phi
+
+    # Step 8: Apply boundary conditions and maintain phase field bounds
+    phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
+    
+    # Ensure phi stays within physical bounds [-1, 1]
+    phi = np.clip(phi, -1.0, 1.0)
+
+    return phi
 
 def project_velocity(U, dx, dy, tolerance=1e-5, max_iterations=10):
     """Project velocity field with iterative refinement until divergence is sufficiently reduced."""
@@ -336,6 +354,38 @@ def enforce_incompressibility(U, dx, dy, max_iterations=20, tolerance=1e-4):
         
         # Apply boundary conditions after each iteration
         U = apply_velocity_boundary_conditions(U)
+    return U
+
+def correction_step(U, dx, dy, dt):
+    """PPE method for incompressible flow."""
+    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx)
+    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy)
+    div = u_x + v_y
+    p_correction = utils.solve_poisson_with_better_bc(div/dt, dx, dy)
+    U[..., 0] -= dt * utils.numerical_derivative(p_correction, axis=0, h=dx)
+    U[..., 1] -= dt * utils.numerical_derivative(p_correction, axis=1, h=dy)
+    return U
+
+def ppe(U, dx, dy, dt):
+    # global correction_step    
+    U = correction_step(U, dx, dy, dt)
+    U = apply_velocity_boundary_conditions(U, 0.01, dy)
+
+    # local corrections
+    divergence, max_div, mean_div = check_continuity(U, dx, dy)
+    if max_div > 100:
+        half = int(U.shape[1] / 2)
+        to_replace = int(U.shape[1] * 0.4)
+        count = 0
+        while max_div > 100:
+            U = np.clip(U, -100, 100)
+            U = correction_step(U, dx, dy, dt)
+            U = apply_velocity_boundary_conditions(U, 0.01, dy)
+            divergence, max_div, mean_div = check_continuity(U, dx, dy)
+            if max_div < 100:
+                break
+            count += 1
+        sys.stdout.write(f"Corrected in {count} iterations \n")
     return U
     
 def initialize_phase(Nx, Ny, radius):
@@ -395,7 +445,8 @@ def main():
     rho2 = config["physical_params"]["rho2"]
     Re1 = config["physical_params"]["Re1"]
     Re2 = config["physical_params"]["Re2"]
-    We = config["physical_params"]["We"]
+    We1 = config["physical_params"]["We1"]
+    We2 = config["physical_params"]["We2"]
     Pe = config["physical_params"]["Pe"]
     epsilon = config["physical_params"]["epsilon"]
     alpha = config["physical_params"]["alpha"]
@@ -487,41 +538,35 @@ def main():
         # Compute derivatives and other terms
         start_time = time.time()
         current_dt = dt_initial if step < 500 else dt
-        surface_tension = utils.surface_tension_force(phi, epsilon, We, dx, dy)
+        surface_tension = utils.surface_tension_force(phi, epsilon, We1, We2, dx, dy)
         surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
         
         U = update_velocity(U, P, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=include_gravity)
 
         # Project velocity to ensure continuity is satisfied
-        max_iterations = 1000 if step % 10 == 0 else 100
-        U = enforce_incompressibility(U, dx, dy, tolerance=1e-4, max_iterations=max_iterations)
+        beta = 0.01
+        U = apply_velocity_boundary_conditions(U, beta, dy)
 
         # Add special handling for extreme divergence points
         divergence, max_div, mean_div = check_continuity(U, dx, dy)
-        if max_div > 5.0:
-            # Find locations of extreme divergence
-            extreme_mask = np.abs(divergence) > 5.0
-            if np.any(extreme_mask):
-                # Apply local smoothing to problematic areas
-                for i in range(2):
-                    smooth_field = U[..., i].copy()
-                    smooth_field[1:-1, 1:-1][extreme_mask[1:-1, 1:-1]] = (
-                        U[0:-2, 1:-1, i][extreme_mask[1:-1, 1:-1]] + 
-                        U[2:, 1:-1, i][extreme_mask[1:-1, 1:-1]] + 
-                        U[1:-1, 0:-2, i][extreme_mask[1:-1, 1:-1]] + 
-                        U[1:-1, 2:, i][extreme_mask[1:-1, 1:-1]]
-                    ) / 4.0
-                    U[..., i] = smooth_field
+        
+        # Apply PPE
+        U = ppe(U, dx, dy, current_dt)
 
+        # beta = 0.01
         # Apply no-slip boundary conditions
-        U = apply_velocity_boundary_conditions(U)
-
-        P = update_pressure(surface_tension, dx, dy, rho1, rho2)
-        # P = utils.apply_pressure_boundary_conditions(P, g, phi, rho1, rho2, dy, atm_pressure)
-        phi = update_phase(phi, U, current_dt, dx, dy)
+        # U = apply_velocity_boundary_conditions(U, beta, dy)
 
         # Apply contact angle boundary conditions
-        phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
+        phi = update_phase(phi, U, current_dt, dx, dy, contact_angle)
+        
+        # Recompute surface tension
+        surface_tension = utils.surface_tension_force(phi, epsilon, We1, We2, dx, dy)
+        surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
+
+        # Update pressure
+        P = update_pressure(surface_tension, dx, dy, rho1, rho2)
+        
         end_time = time.time()
         times.append(end_time - start_time)
         
@@ -539,10 +584,10 @@ def main():
             sys.stdout.write(f"Droplet mass {mass} \n")
             sys.stdout.write(f"Start/end of the droplet on the surface: {start_of_droplet} - {end_of_droplet} \n")
 
-        if step % 25 == 0:  # Plot every 25 steps
+        if step % checkpoint_interval == 0:  # Plot every 25 steps
             mass = np.sum(phi[phi > 0])
             utils.create_joint_plot(
-                phi, U, P, surface_tension, current_dt, step, dx, dy, mass,
+                phi, U, P, surface_tension, current_dt, step, dx, dy, mass, rho1, rho2,
                 save_path=f'{login_dir}/joint_plot_step_{step}.png'
             )
 
