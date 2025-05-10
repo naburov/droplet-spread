@@ -356,36 +356,53 @@ def enforce_incompressibility(U, dx, dy, max_iterations=20, tolerance=1e-4):
         U = apply_velocity_boundary_conditions(U)
     return U
 
-def correction_step(U, dx, dy, dt):
+def correction_step(U, dx, dy, dt, dtype='float32', solution=None):
     """PPE method for incompressible flow."""
-    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx)
-    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy)
+    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx, dtype=dtype)
+    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy, dtype=dtype)
     div = u_x + v_y
-    p_correction = utils.solve_poisson_with_better_bc(div/dt, dx, dy)
-    U[..., 0] -= dt * utils.numerical_derivative(p_correction, axis=0, h=dx)
-    U[..., 1] -= dt * utils.numerical_derivative(p_correction, axis=1, h=dy)
+
+    # p_correction = utils.solve_poisson_with_better_bc(div/dt, dx, dy)
+    # p_correction = utils.solve_poisson_pyro(div/dt, dx, dy, solution=solution)
+    p_correction = utils.solve_poisson_pyamg(div/dt, dx, dy, solution=solution)
+    U[..., 0] -= dt * utils.numerical_derivative(p_correction, axis=0, h=dx, dtype=dtype)
+    U[..., 1] -= dt * utils.numerical_derivative(p_correction, axis=1, h=dy, dtype=dtype)
+    return U, p_correction
+
+def damp_divergence(U, dx, dy, xi, dt):
+    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx, dtype='float32')
+    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy, dtype='float32')
+    div = u_x + v_y
+    div_grad = utils.gradient(div, dx, dy)
+    U[..., 0] -= xi * dt * div_grad[..., 0]
+    U[..., 1] -= xi * dt * div_grad[..., 1]
     return U
 
-def ppe(U, dx, dy, dt):
+def ppe(U, dx, dy, dt, solution=None):
+    max_div_threshold = 5
     # global correction_step    
-    U = correction_step(U, dx, dy, dt)
+    U = np.clip(U, -1000, 1000)
+    U, solution = correction_step(U, dx, dy, dt, dtype='float32', solution=solution)
     U = apply_velocity_boundary_conditions(U, 0.01, dy)
 
     # local corrections
     divergence, max_div, mean_div = check_continuity(U, dx, dy)
-    if max_div > 100:
+    if max_div > max_div_threshold:
+        # U = U.astype(np.half)
         half = int(U.shape[1] / 2)
         to_replace = int(U.shape[1] * 0.4)
         count = 0
-        while max_div > 100:
-            U = np.clip(U, -100, 100)
-            U = correction_step(U, dx, dy, dt)
+        while max_div > max_div_threshold:
+            U = np.clip(U, -1000, 1000)
+            U, solution = correction_step(U, dx, dy, dt, dtype='float32', solution=solution)
             U = apply_velocity_boundary_conditions(U, 0.01, dy)
             divergence, max_div, mean_div = check_continuity(U, dx, dy)
-            if max_div < 100:
+            if count % 5 == 0:
+                sys.stdout.write(f"\rMax|mean div: {max_div:.6f}  | {mean_div:.6f}")
+            if max_div < max_div_threshold:
                 break
             count += 1
-        sys.stdout.write(f"Corrected in {count} iterations \n")
+        sys.stdout.write(f"\nCorrected in {count} iterations \n")
     return U
     
 def initialize_phase(Nx, Ny, radius):
@@ -425,6 +442,10 @@ def get_borders_of_droplet(phi):
             end_of_droplet = i
             break
     return start_of_droplet, end_of_droplet
+
+def cfl_dt(u_max, v_max, dx, dy, C=0.4):
+    """Return Δt that gives desired CFL=C."""
+    return C / (abs(u_max)/dx + abs(v_max)/dy)
 
 def main():
     # Parse command line arguments
@@ -536,8 +557,16 @@ def main():
     for step in range(start_step, num_steps):
         # Use dt_initial for the first 100 steps
         # Compute derivatives and other terms
+        
         start_time = time.time()
         current_dt = dt_initial if step < 500 else dt
+
+        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.1)
+        print(f"Current dt: {current_dt}")
+        if cfl_computed_dt != np.inf:
+            current_dt = cfl_computed_dt
+            print(f"Updated dt: {current_dt}")
+
         surface_tension = utils.surface_tension_force(phi, epsilon, We1, We2, dx, dy)
         surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
         
@@ -549,7 +578,7 @@ def main():
 
         # Add special handling for extreme divergence points
         divergence, max_div, mean_div = check_continuity(U, dx, dy)
-        
+            
         # Apply PPE
         U = ppe(U, dx, dy, current_dt)
 

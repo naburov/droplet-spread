@@ -10,6 +10,8 @@ import os
 from datetime import datetime
 from scipy.sparse.linalg import cg
 from scipy.sparse import kron, identity
+from pyro.multigrid import MG
+import pyamg
 
 # import jax.numpy as jnp
 # from jax import jit
@@ -19,9 +21,9 @@ from scipy.sparse import kron, identity
 #     """Calculate the numerical derivative of f along a specified axis using central difference with JIT compilation."""
 #     return ((jnp.roll(f, -1, axis=axis) - jnp.roll(f, 1, axis=axis)) / (2 * h)).astype('float32')
 
-def numerical_derivative(f, axis=0, h=1e-5):
+def numerical_derivative(f, axis=0, h=1e-5, dtype='float32'):
     """Calculate the numerical derivative of f along a specified axis using central difference."""
-    return ((np.roll(f, -1, axis=axis) - np.roll(f, 1, axis=axis)) / (2 * h)).astype('float32')
+    return ((np.roll(f, -1, axis=axis) - np.roll(f, 1, axis=axis)) / (2 * h)).astype(dtype)
 
 # numerical_derivative = jit(numerical_derivative)
 
@@ -218,6 +220,82 @@ def solve_poisson_with_better_bc(rhs, dx, dy):
     phi_flat = spsolve(A, rhs.flatten(), use_umfpack=True)
     
     return phi_flat.reshape((Nx, Ny))
+
+def create_correction_matrix(Nx, Ny, dx, dy):
+    main_diag_x = -2 * np.ones(Nx) / (dx**2)
+    off_diag_x = np.ones(Nx - 1) / (dx**2)
+    Tx = diags([off_diag_x, main_diag_x, off_diag_x], [-1, 0, 1], shape=(Nx, Nx))
+    
+    # 1D Laplacian for y-direction
+    main_diag_y = -2 * np.ones(Ny) / (dy**2)
+    off_diag_y = np.ones(Ny - 1) / (dy**2)
+    Ty = diags([off_diag_y, main_diag_y, off_diag_y], [-1, 0, 1], shape=(Ny, Ny))
+
+    # Apply boundary conditions
+    Tx = Tx.tolil()
+    Tx[0, 1] = 2 / (dx**2)  # Left boundary mirror
+    Tx[-1, -2] = 2 / (dx**2)  # Right boundary mirror
+    Tx = Tx.tocsr()
+        
+    Ty = Ty.tolil()
+    Ty[0, 1] = 2 / (dy**2)
+    Ty[-1, -2] = 2 / (dy**2)
+    Ty = Ty.tocsr()
+    
+    # Create identity matrices
+    Ix = identity(Nx)
+    Iy = identity(Ny)
+    
+    # Combine using Kronecker products to create 2D Laplacian
+    A = kron(Iy, Tx) + kron(Ty, Ix)
+    return A
+
+def solve_poisson_pyamg(rhs, dx, dy, solution=None):
+    Nx, Ny = rhs.shape[0], rhs.shape[1]
+    
+    A = create_correction_matrix(Nx, Ny, dx, dy)
+    ml = pyamg.ruge_stuben_solver(A)                    # construct the multigrid hierarchy
+    x = ml.solve(rhs.flatten(), tol=1e-1)                          # solve Ax=b to a tolerance of 1e-10
+    
+    return x.reshape((Nx, Ny))
+
+def solve_poisson_pyro(rhs, dx, dy, solution=None):
+    """Solve Poisson equation using Pyro."""
+
+    nx = int(1.0 / dx)
+    ny = nx
+
+    # create the multigrid object
+    a = MG.CellCenterMG2d(nx, ny,
+                          xl_BC_type="neumann", yl_BC_type="neumann",
+                          xr_BC_type="neumann", yr_BC_type="neumann",
+                          verbose=False)
+
+    # initialize the solution to 0
+
+    if solution is not None:
+        solution = np.pad(solution, ((1, 1), (1, 1)), mode="edge")
+        solution[0, :] = solution[1, :]
+        solution[-1, :] = solution[-2, :]
+        solution[:, 0] = solution[:, 1]
+        solution[:, -1] = solution[:, -2]
+        a.init_solution(solution)
+    else:
+        a.init_zeros()
+
+    rhs = np.pad(rhs, ((1, 1), (1, 1)), mode="edge")
+    # initialize the RHS using the function f
+    a.init_RHS(rhs)
+
+    # solve to a relative tolerance of 1.e-11
+    a.solve(rtol=1.e-1)
+
+    # alternately, we can just use smoothing by uncommenting the following
+    # a.smooth(a.nlevels-1,50000)
+
+    # get the solution
+    v = a.get_solution()
+    return v[1:-1, 1:-1]
 
 def f_1(phi):
     """Double-well potential function with minimas at phi = 0 and phi = 1.
