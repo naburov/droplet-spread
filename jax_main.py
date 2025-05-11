@@ -6,13 +6,40 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import utils  # Assuming utils.py is in the same directory
+import utils
+ # Assuming utils.py is in the same directory
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
 import time 
 import sys
+import jax.numpy as jnp
+import jax
+from jax import jit
 from scipy.sparse import kron, identity, linalg
-from plot_utils import save_checkpoint, list_checkpoints, load_checkpoint
+from jax_utils import (
+    jax_calculate_density,
+    jax_calculate_reynolds_number,
+    jax_calculate_weber_number,
+    jax_dx,
+    jax_dy,
+    jax_apply_contact_angle_boundary_conditions,
+    jax_build_2d_laplacian_matrix_with_variable_steps,
+    jax_laplacian,
+    jax_gradient,
+    jax_divergence,
+    jax_df_2,
+    jax_f_2,
+    jax_surface_tension_force,
+    solve_poisson_pyamg,
+    jax_apply_surface_tension_boundary_conditions,
+)
+from plot_utils import (
+    create_joint_plot, 
+    save_checkpoint, 
+    list_checkpoints, 
+    load_checkpoint, 
+    load_config
+)
 
 # Global variables used by multiple functions
 phi = None
@@ -25,73 +52,6 @@ contact_angle = None
 Fr = None
 g = None
 atm_pressure = None
-
-def load_config(config_path=None):
-    """
-    Load configuration from a JSON file or use defaults.
-    
-    Args:
-        config_path (str, optional): Path to the JSON configuration file.
-        
-    Returns:
-        dict: Configuration parameters.
-    """
-    # Default configuration
-    config = {
-        "physical_params": {
-            "rho": 1.0,
-            "Re1": 1000.0,
-            "Re2": 10.0,
-            "We": 10.0,
-            "Pe": 1.0,
-            "epsilon": 0.05,
-            "alpha": 1.0,
-            "phase_penalty": 1000.0,
-            "contact_angle": 120
-        },
-        "grid_params": {
-            "Lx": 1.0,
-            "Ly": 1.0,
-            "Nx": 100,
-            "Ny": 100
-        },
-        "time_params": {
-            "dt": 0.001,
-            "t_max": 1.0,
-            "checkpoint_interval": 50,
-            "dt_initial": 0.0005
-        },
-        "initial_conditions": {
-            "droplet_radius": 0.2
-        },
-        "restart": {
-            "restart_from": None
-        }
-    }
-    
-    # Load configuration from file if provided
-    if config_path:
-        try:
-            with open(config_path, 'r') as f:
-                loaded_config = json.load(f)
-                
-            # Update default config with loaded values (recursive update)
-            def update_dict(d, u):
-                for k, v in u.items():
-                    if isinstance(v, dict) and k in d and isinstance(d[k], dict):
-                        update_dict(d[k], v)
-                    else:
-                        d[k] = v
-            
-            update_dict(config, loaded_config)
-            sys.stdout.write(f"Configuration loaded from {config_path}")
-        except Exception as e:
-            sys.stdout.write(f"Error loading config file: {e}")
-            sys.stdout.write("Using default configuration")
-    else:
-        sys.stdout.write("No config file provided. Using default configuration.")
-    
-    return config
 
 
 def build_2d_laplacian_matrix(N, h=1.0, bc_type='dirichlet'):
@@ -122,62 +82,66 @@ def build_2d_laplacian_matrix(N, h=1.0, bc_type='dirichlet'):
     A = (kron(I, T) + kron(T, I)) / h**2
     return A
 
-def solve_poisson(rhs, dx, dy):
+def solve_poisson(rhs, Nx, Ny, dx, dy):
     """Solve the Poisson equation ∇²φ = f with Neumann boundary conditions."""
-    A = utils.build_2d_laplacian_matrix_with_variable_steps(rhs.shape[0], rhs.shape[1], dx, dy, 'neumann')
+    A = jax_build_2d_laplacian_matrix_with_variable_steps(Nx, Ny, dx, dy)
     
     # Reshape right-hand side to match matrix equation
     rhs_flat = np.transpose(rhs).flatten(order='C')  # Use C-style ordering (row-major)
     
     # Solve the linear system
-    phi_flat = linalg.spsolve(A, rhs_flat)
+    phi_flat = spsolve(A, rhs_flat)
     
     # Reshape solution to 2D - use proper ordering
-    phi = phi_flat.reshape((rhs.shape[1], rhs.shape[0]), order='C')
+    phi = phi_flat.reshape((Nx, Ny), order='C')
     phi = np.transpose(phi)
     
     return phi
 
+@jit
 def compute_viscous_term(U, dx, dy, Re):
     """Simplified viscous term for constant viscosity: (1/Re) * ∇²U"""
-    viscous_term = np.zeros_like(U)
-    viscous_term[..., 0] = utils.laplacian(U[..., 0], dx, dy) / Re
-    viscous_term[..., 1] = utils.laplacian(U[..., 1], dx, dy) / Re
-    return viscous_term
+    return jnp.stack([jax_laplacian(U[..., 0], dx, dy) / Re, 
+                      jax_laplacian(U[..., 1], dx, dy) / Re], axis=-1)
 
+@jit
 def check_continuity(U, dx, dy):
     """
     Check continuity equation condition (∇·U = 0)
     Returns the divergence field and maximum absolute divergence
     """
     # Calculate divergence: du/dx + dv/dy
-    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx)
-    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy)
+    u_x = jax_dx(U[..., 0], h=dx)
+    v_y = jax_dy(U[..., 1], h=dy)
     
     divergence = u_x + v_y
-    max_div = np.max(np.abs(divergence))
-    mean_div = np.mean(np.abs(divergence))
+    max_div = jnp.max(jnp.abs(divergence))
+    mean_div = jnp.mean(jnp.abs(divergence))
     
     return divergence, max_div, mean_div
 
-def update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=False):
+def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=False):
     """Update the velocity field U based on the phase field phi."""
     # Calculate the Reynolds number and density
-    Re = utils.calculate_reynolds_number(phi, Re1, Re2)
-    rho = utils.calculate_density(phi, rho1, rho2)
-    rho_stacked = np.stack([rho, rho], axis=-1) + 1e-6
+    Re = jax_calculate_reynolds_number(phi, Re1, Re2)
+    rho = jax_calculate_density(phi, rho1, rho2)
+    rho_stacked = jnp.stack([rho, rho], axis=-1) + 1e-6
 
     # Calculate gradients and terms
-    grad_U = utils.gradient(U, dx, dy)
-    p_grad = utils.gradient(p, dx, dy)
+    grad_U = jax_gradient(U, dx, dy)
+    p_grad = jax_gradient(p, dx, dy)
     
     # Calculate viscous term with proper scaling
     viscous_term = compute_viscous_term(U, dx, dy, Re)
     
     # Calculate convective term (in conservative form)
-    convective_term = np.zeros_like(U)
-    convective_term[..., 0] = (U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1])
-    convective_term[..., 1] = (U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1])
+    convective_term = jnp.stack(
+        [
+            U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1],
+            U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1]
+        ],
+        axis=-1
+    )
 
     # Combine terms with proper density scaling
     rhs_U = (
@@ -189,13 +153,16 @@ def update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, inclu
 
     # Add gravity if included
     if include_gravity:
-        rhs_U += (1 / Fr) * np.stack([np.zeros_like(U[..., 0]), -np.ones_like(U[..., 1])], axis=-1)
+        rhs_U = rhs_U + (1 / Fr) * jnp.stack([jnp.zeros_like(U[..., 0]), -jnp.ones_like(U[..., 1])], axis=-1)
 
     # Update velocity field using explicit Euler
     U = U + current_dt * rhs_U
     
     return U
 
+update_velocity = jit(jax_update_velocity, static_argnames='include_gravity')
+
+@jit
 def apply_velocity_boundary_conditions(U, beta, dy):
     """Apply physically appropriate boundary conditions to velocity field.
     
@@ -206,37 +173,27 @@ def apply_velocity_boundary_conditions(U, beta, dy):
         np.ndarray: Velocity with boundary conditions applied.
     """
     # Make a copy to avoid modifying the original array
-    U_new = U.copy()
-    
-    # Bottom boundary (solid wall): Slip condition
-    U_new[:, 0, 1] = 0.0 # y
-    U_new[:, 0, 0] = U_new[:, 1, 0] - dy * 1/beta * U_new[:, 1, 0]  # x
+    U = U.at[:, 0, 1].set(0.0)
+    U = U.at[:, 0, 0].set(U[:, 1, 0] - dy * 1/beta * U[:, 1, 0])
 
     # Top boundary (open atmosphere): Zero-gradient condition
-    U_new[:, -1, :] = U_new[:, -2, :]
+    U = U.at[:, -1, :].set(U[:, -2, :])
     
     # Left and right boundaries: Zero-gradient condition
-    # U_new[0, :, :] = U_new[1, :, :]
-    # U_new[-1, :, :] = U_new[-2, :, :]
-    U_new[0, :, :] = 0.0
-    U_new[-1, :, :] = 0.0
+    U = U.at[0, :, :].set(0.0)
+    U = U.at[-1, :, :].set(0.0)
     
-    return U_new 
+    return U
 
-def update_pressure(surface_tension, dx, dy, rho1, rho2):
+def update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2):
     """Update the pressure field P based on the velocity field U and phase field phi."""
-    sf_grad = utils.numerical_derivative(surface_tension[..., 0], axis=0, h=dx) +  \
-              utils.numerical_derivative(surface_tension[..., 1], axis=1, h=dy)
-    rho = utils.calculate_density(phi, rho1, rho2)
-    sf_grad = sf_grad
+    sf_grad = jax_divergence(surface_tension, dx, dy)
+    rho = jax_calculate_density(phi, rho1, rho2)
 
-    # Apply boundary conditions
-    sf_grad[:, 0] = np.sum(rho * g * dy, axis=-1)
-    sf_grad[:, 0] += atm_pressure
+    sf_grad = sf_grad.at[:, 0].set(jnp.sum(rho * g * dy, axis=1) + atm_pressure)
+    sf_grad = sf_grad.at[:, -1].set(atm_pressure)
 
-    sf_grad[:, -1] = atm_pressure
-
-    P = solve_poisson(sf_grad, dx, dy) 
+    P = solve_poisson(sf_grad, Nx, Ny, dx, dy) 
     return P
 
 def penalization(phi, alpha):
@@ -250,6 +207,7 @@ def penalization(phi, alpha):
     
     return alpha * penalty
 
+@jit
 def update_phase(phi, U, current_dt, dx, dy, contact_angle):
     """Update the phase field using the explicit Euler method with interface thickness control.
     
@@ -260,20 +218,19 @@ def update_phase(phi, U, current_dt, dx, dy, contact_angle):
         epsilon (float): Interface thickness parameter.
     """
     # Step 1: Calculate the gradient of phi
-    grad_phi = utils.gradient(phi, dx, dy)  # Shape: (Nx, Ny, 2)
+    grad_phi = jax_gradient(phi, dx, dy)  # Shape: (Nx, Ny, 2)
     # grad_phi_mag = np.sqrt(grad_phi[..., 0]**2 + grad_phi[..., 1]**2)
 
     # Step 2: Calculate the convective term
-    convective_term = np.zeros_like(phi)  # Shape: (Nx, Ny)
-    convective_term += U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]
+    convective_term = U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]
 
     # Step 3: Calculate the Laplacian of phi
-    lap_phi = utils.laplacian(phi, dx, dy)
+    lap_phi = jax_laplacian(phi, dx, dy)
 
     # Step 4: Calculate stabilized chemical potential with interface thickness control
     # This formulation helps maintain the interface thickness
-    chemical_potential = utils.df_2(phi) - epsilon**2 * lap_phi
-    lagrange_multiplier = np.mean(chemical_potential)
+    chemical_potential = jax_df_2(phi) - epsilon**2 * lap_phi
+    lagrange_multiplier = jnp.mean(chemical_potential)
     source_term = -1/Pe * (chemical_potential - lagrange_multiplier)
 
     # Add stabilization term to maintain interface thickness
@@ -293,97 +250,40 @@ def update_phase(phi, U, current_dt, dx, dy, contact_angle):
     phi = phi + current_dt * rhs_phi
 
     # Step 8: Apply boundary conditions and maintain phase field bounds
-    phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
+    phi = jax_apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
     
     # Ensure phi stays within physical bounds [-1, 1]
-    phi = np.clip(phi, -1.0, 1.0)
+    phi = jnp.clip(phi, -1.0, 1.0)
 
     return phi
 
-def project_velocity(U, dx, dy, tolerance=1e-5, max_iterations=10):
-    """Project velocity field with iterative refinement until divergence is sufficiently reduced."""
-    U_projected = U.copy()
-    
-    for iteration in range(max_iterations):
-        # Calculate divergence
-        u_x = utils.numerical_derivative(U_projected[..., 0], axis=0, h=dx)
-        v_y = utils.numerical_derivative(U_projected[..., 1], axis=1, h=dy)
-        divergence = u_x + v_y
-        
-        max_div = np.max(np.abs(divergence))
-        if max_div < tolerance:
-            break  # Stop if divergence is small enough
-        
-        # Solve Poisson equation for pressure correction
-        p_correction = solve_poisson(divergence, dx, dy)
-        
-        # Calculate gradient of pressure correction
-        grad_p = utils.gradient(p_correction, dx, dy)
-        
-        # Project velocity field
-        U_projected[..., 0] -= grad_p[..., 0]
-        U_projected[..., 1] -= grad_p[..., 1]
-        
-        # Apply boundary conditions to projected velocity
-        U_projected = apply_velocity_boundary_conditions(U_projected)
-    
-    return U_projected
-
-def enforce_incompressibility(U, dx, dy, max_iterations=20, tolerance=1e-4):
-    """More robust projection to enforce incompressibility"""
-    for iter in range(max_iterations):
-        # Calculate divergence
-        u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx)
-        v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy)
-        div = u_x + v_y
-
-        if iter > 100 and iter % 10 == 0:
-            sys.stdout.write(f"Iteration {iter}, Max divergence: {np.max(np.abs(div))}\n")
-
-        max_div = np.max(np.abs(div))
-        if max_div < tolerance:
-            break
-            
-        # Solve Poisson equation with stronger relaxation
-        p_correction = utils.solve_poisson_with_better_bc(div, dx, dy)
-        
-        # Apply correction with relaxation factor
-        relax = 1.0  # Relaxation factor for stability
-        grad_p = utils.gradient(p_correction, dx, dy)
-        U[..., 0] -= relax * grad_p[..., 0]
-        U[..., 1] -= relax * grad_p[..., 1]
-        
-        # Apply boundary conditions after each iteration
-        U = apply_velocity_boundary_conditions(U)
-    return U
-
-def correction_step(U, dx, dy, dt, dtype='float32', solution=None):
+def correction_step(U, dx, dy, dt, solution=None):
     """PPE method for incompressible flow."""
-    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx, dtype=dtype)
-    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy, dtype=dtype)
+    u_x = jax_dx(U[..., 0], h=dx)
+    v_y = jax_dy(U[..., 1], h=dy)
     div = u_x + v_y
 
     # p_correction = utils.solve_poisson_with_better_bc(div/dt, dx, dy)
     # p_correction = utils.solve_poisson_pyro(div/dt, dx, dy, solution=solution)
-    p_correction = utils.solve_poisson_pyamg(div/dt, dx, dy, solution=solution)
-    U[..., 0] -= dt * utils.numerical_derivative(p_correction, axis=0, h=dx, dtype=dtype)
-    U[..., 1] -= dt * utils.numerical_derivative(p_correction, axis=1, h=dy, dtype=dtype)
+    p_correction = utils.solve_poisson_pyamg(np.array(div/dt), dx, dy, solution=solution)
+    U = U.at[..., 0].set(U[..., 0] - dt * jax_dx(p_correction, h=dx))
+    U = U.at[..., 1].set(U[..., 1] - dt * jax_dy(p_correction, h=dy))
     return U, p_correction
 
 def damp_divergence(U, dx, dy, xi, dt):
-    u_x = utils.numerical_derivative(U[..., 0], axis=0, h=dx, dtype='float32')
-    v_y = utils.numerical_derivative(U[..., 1], axis=1, h=dy, dtype='float32')
+    u_x = jax_dx(U[..., 0], h=dx)
+    v_y = jax_dy(U[..., 1], h=dy)
     div = u_x + v_y
-    div_grad = utils.gradient(div, dx, dy)
-    U[..., 0] -= xi * dt * div_grad[..., 0]
-    U[..., 1] -= xi * dt * div_grad[..., 1]
+    div_grad = jax_gradient(div, dx, dy)
+    U = U.at[..., 0].set(U[..., 0] - xi * dt * div_grad[..., 0])
+    U = U.at[..., 1].set(U[..., 1] - xi * dt * div_grad[..., 1])
     return U
 
 def ppe(U, dx, dy, dt, solution=None):
     max_div_threshold = 5
     # global correction_step    
-    U = np.clip(U, -1000, 1000)
-    U, solution = correction_step(U, dx, dy, dt, dtype='float32', solution=solution)
+    U = jnp.clip(U, -1000, 1000)
+    U, solution = correction_step(U, dx, dy, dt, solution=solution)
     U = apply_velocity_boundary_conditions(U, 0.01, dy)
 
     # local corrections
@@ -394,8 +294,8 @@ def ppe(U, dx, dy, dt, solution=None):
         to_replace = int(U.shape[1] * 0.4)
         count = 0
         while max_div > max_div_threshold:
-            U = np.clip(U, -1000, 1000)
-            U, solution = correction_step(U, dx, dy, dt, dtype='float32', solution=solution)
+            U = jnp.clip(U, -1000, 1000)
+            U, solution = correction_step(U, dx, dy, dt, solution=solution)
             U = apply_velocity_boundary_conditions(U, 0.01, dy)
             divergence, max_div, mean_div = check_continuity(U, dx, dy)
             if count % 5 == 0:
@@ -444,9 +344,10 @@ def get_borders_of_droplet(phi):
             break
     return start_of_droplet, end_of_droplet
 
+@jit
 def cfl_dt(u_max, v_max, dx, dy, C=0.4):
     """Return Δt that gives desired CFL=C."""
-    return C / (abs(u_max)/dx + abs(v_max)/dy)
+    return C / (jnp.abs(u_max)/dx + jnp.abs(v_max)/dy)
 
 def main():
     # Parse command line arguments
@@ -540,7 +441,7 @@ def main():
     # Optional: restart from checkpoint
     if restart_from is not None:
         sys.stdout.write(f"Restarting from checkpoint: {restart_from} \n")
-        checkpoint_data = utils.load_checkpoint(restart_from)
+        checkpoint_data = load_checkpoint(restart_from)
         
         # Load simulation state
         start_step = checkpoint_data['step']
@@ -568,8 +469,8 @@ def main():
             current_dt = cfl_computed_dt
             print(f"Updated dt: {current_dt}")
 
-        surface_tension = utils.surface_tension_force(phi, epsilon, We1, We2, dx, dy)
-        surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
+        surface_tension = jax_surface_tension_force(phi, epsilon, We1, We2, dx, dy)
+        surface_tension = jax_apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
         
         U = update_velocity(U, P, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=include_gravity)
 
@@ -591,11 +492,11 @@ def main():
         phi = update_phase(phi, U, current_dt, dx, dy, contact_angle)
         
         # Recompute surface tension
-        surface_tension = utils.surface_tension_force(phi, epsilon, We1, We2, dx, dy)
-        surface_tension = utils.apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
+        surface_tension = jax_surface_tension_force(phi, epsilon, We1, We2, dx, dy)
+        surface_tension = jax_apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
 
         # Update pressure
-        P = update_pressure(surface_tension, dx, dy, rho1, rho2)
+        P = update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2)
         
         end_time = time.time()
         times.append(end_time - start_time)
@@ -616,14 +517,14 @@ def main():
 
         if step % checkpoint_interval == 0:  # Plot every 25 steps
             mass = np.sum(phi[phi > 0])
-            utils.create_joint_plot(
+            create_joint_plot(
                 phi, U, P, surface_tension, current_dt, step, dx, dy, mass, rho1, rho2,
                 save_path=f'{login_dir}/joint_plot_step_{step}.png'
             )
 
         # Save checkpoint at specified intervals
         if step % checkpoint_interval == 0:
-            utils.save_checkpoint(step, phi, U, P, directory=f"{login_dir}/checkpoints")
+            save_checkpoint(step, phi, U, P, directory=f"{login_dir}/checkpoints")
 
 if __name__ == "__main__":
     main()

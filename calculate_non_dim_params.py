@@ -115,8 +115,8 @@ if __name__ == "__main__":
         "mu": 0.001,
         "sigma": 0.0728,
         "g": 9.81,
-        "velocity": 0.001,
-        "length": 0.05,
+        "velocity": 0.01,
+        "length": 0.015,
         "diffusivity": 1.43e-7 
     }
     
@@ -125,8 +125,8 @@ if __name__ == "__main__":
         "mu": 1.82e-5,
         "sigma": 0.0728,
         "g": 9.81,
-        "velocity": 0.001,
-        "length": 0.05,
+        "velocity": 0.01,
+        "length": 0.015,
         "diffusivity": 2e-5
     }
 
