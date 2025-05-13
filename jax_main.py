@@ -54,34 +54,6 @@ g = None
 atm_pressure = None
 
 
-def build_2d_laplacian_matrix(N, h=1.0, bc_type='dirichlet'):
-    """
-    Constructs the 2D Laplacian matrix using Kronecker product and scipy.diags,
-    with optional Dirichlet or Neumann boundary conditions.
-
-    Parameters:
-        N (int): Number of interior grid points per dimension
-        h (float): Grid spacing (default 1.0)
-        bc_type (str): 'dirichlet' or 'neumann'
-
-    Returns:
-        scipy.sparse.csr_matrix: Sparse Laplacian matrix of shape (N^2, N^2)
-    """
-    # 1D Laplacian
-    main_diag = -2 * np.ones(N)
-    off_diag = np.ones(N - 1)
-    T = diags([off_diag, main_diag, off_diag], [-1, 0, 1], shape=(N, N))
-
-    if bc_type == 'neumann':
-        T = T.tolil()
-        T[0, 1] = 2  # Left boundary mirror
-        T[-1, -2] = 2  # Right boundary mirror
-        T = T.tocsr()
-
-    I = identity(N)
-    A = (kron(I, T) + kron(T, I)) / h**2
-    return A
-
 def solve_poisson(rhs, Nx, Ny, dx, dy):
     """Solve the Poisson equation ∇²φ = f with Neumann boundary conditions."""
     A = jax_build_2d_laplacian_matrix_with_variable_steps(Nx, Ny, dx, dy)
@@ -257,45 +229,39 @@ def update_phase(phi, U, current_dt, dx, dy, contact_angle):
 
     return phi
 
-def correction_step(U, dx, dy, dt, solution=None):
-    """PPE method for incompressible flow."""
-    u_x = jax_dx(U[..., 0], h=dx)
-    v_y = jax_dy(U[..., 1], h=dy)
-    div = u_x + v_y
+def correction_step(U, dx, dy, dt, solution=None, div=None):
+    if div is None:
+        div = jax_divergence(U, dx, dy) / dt
 
     # p_correction = utils.solve_poisson_with_better_bc(div/dt, dx, dy)
     # p_correction = utils.solve_poisson_pyro(div/dt, dx, dy, solution=solution)
-    p_correction = utils.solve_poisson_pyamg(np.array(div/dt), dx, dy, solution=solution)
+    p_correction = utils.solve_poisson_pyamg(np.array(div), dx, dy, solution=solution)
     U = U.at[..., 0].set(U[..., 0] - dt * jax_dx(p_correction, h=dx))
     U = U.at[..., 1].set(U[..., 1] - dt * jax_dy(p_correction, h=dy))
     return U, p_correction
 
 def damp_divergence(U, dx, dy, xi, dt):
-    u_x = jax_dx(U[..., 0], h=dx)
-    v_y = jax_dy(U[..., 1], h=dy)
-    div = u_x + v_y
+    div = jax_divergence(U, dx, dy)
     div_grad = jax_gradient(div, dx, dy)
     U = U.at[..., 0].set(U[..., 0] - xi * dt * div_grad[..., 0])
     U = U.at[..., 1].set(U[..., 1] - xi * dt * div_grad[..., 1])
     return U
 
 def ppe(U, dx, dy, dt, solution=None):
-    max_div_threshold = 5
+    max_div_threshold = 0.05
     # global correction_step    
-    U = jnp.clip(U, -1000, 1000)
     U, solution = correction_step(U, dx, dy, dt, solution=solution)
     U = apply_velocity_boundary_conditions(U, 0.01, dy)
 
     # local corrections
     divergence, max_div, mean_div = check_continuity(U, dx, dy)
-    if max_div > max_div_threshold:
+    if mean_div > max_div_threshold:
         # U = U.astype(np.half)
         half = int(U.shape[1] / 2)
         to_replace = int(U.shape[1] * 0.4)
         count = 0
-        while max_div > max_div_threshold:
-            U = jnp.clip(U, -1000, 1000)
-            U, solution = correction_step(U, dx, dy, dt, solution=solution)
+        while mean_div > max_div_threshold:
+            U, solution = correction_step(U, dx, dy, dt, solution=solution, div=divergence/dt)
             U = apply_velocity_boundary_conditions(U, 0.01, dy)
             divergence, max_div, mean_div = check_continuity(U, dx, dy)
             if count % 5 == 0:
@@ -456,18 +422,21 @@ def main():
 
     times = []
     # Main simulation loop
-    for step in range(start_step, num_steps):
+    cur_t = 0
+    step = 0
+    while cur_t < t_max:
         # Use dt_initial for the first 100 steps
         # Compute derivatives and other terms
         
         start_time = time.time()
         current_dt = dt_initial if step < 500 else dt
 
-        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.1)
-        print(f"Current dt: {current_dt}")
+        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.0005)
+        # print(f"Current dt: {current_dt}")
         if cfl_computed_dt != np.inf:
             current_dt = cfl_computed_dt
-            print(f"Updated dt: {current_dt}")
+            # print(f"Updated dt: {current_dt}")
+        cur_t += current_dt
 
         surface_tension = jax_surface_tension_force(phi, epsilon, We1, We2, dx, dy)
         surface_tension = jax_apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
@@ -503,7 +472,7 @@ def main():
         
         # Print or log results for analysis
         if step % 10 == 0:  # Print every 10 steps
-            sys.stdout.write(f"Step {step}, Time {step * current_dt:.2f} \n")
+            sys.stdout.write(f"Step {step}, Time {cur_t:.2f} \n")
             sys.stdout.write(f"Min/Max of U: {U.min():.4f} / {U.max():.4f} \n")
             sys.stdout.write(f"Min/Max of P: {P.min():.4f} / {P.max():.4f} \n")
             sys.stdout.write(f"Min/Max of phi: {phi.min():.4f} / {phi.max():.4f} \n")
@@ -525,6 +494,7 @@ def main():
         # Save checkpoint at specified intervals
         if step % checkpoint_interval == 0:
             save_checkpoint(step, phi, U, P, directory=f"{login_dir}/checkpoints")
+        step += 1
 
 if __name__ == "__main__":
     main()

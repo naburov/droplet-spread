@@ -148,10 +148,10 @@ def jax_build_2d_laplacian_matrix_with_variable_steps(Nx, Ny, dx, dy):
     Tx = Tx.tocsr()
         
     Ty = Ty.tolil()
-    Ty[0, 0] = 1.0
-    Ty[0, 1] = 0.0  
-    Ty[-1, -1] = 1.0
-    Ty[-1, -2] = 0.0
+    Ty[0, :] = 0.0
+    Ty[0, 0] = 1.0     # Dirichlet row at bottom
+    Ty[-1, :] = 0.0
+    Ty[-1, -1] = 1.0   # Dirichlet row at top
     Ty = Ty.tocsr()
     
     # Create identity matrices
