@@ -40,7 +40,7 @@ from plot_utils import (
     load_checkpoint, 
     load_config
 )
-
+from sparse_solver import SparseSolverWrapper
 # Global variables used by multiple functions
 phi = None
 Re1 = None
@@ -152,12 +152,12 @@ def apply_velocity_boundary_conditions(U, beta, dy):
     U = U.at[:, -1, :].set(U[:, -2, :])
     
     # Left and right boundaries: Zero-gradient condition
-    U = U.at[0, :, :].set(0.0)
-    U = U.at[-1, :, :].set(0.0)
+    U = U.at[0, :, :].set(U[1, :, :])
+    U = U.at[-1, :, :].set(U[-2, :, :])
     
     return U
 
-def update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2):
+def update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2, pressure_solver):
     """Update the pressure field P based on the velocity field U and phase field phi."""
     sf_grad = jax_divergence(surface_tension, dx, dy)
     rho = jax_calculate_density(phi, rho1, rho2)
@@ -165,7 +165,16 @@ def update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2):
     sf_grad = sf_grad.at[:, 0].set(jnp.sum(rho * g * dy, axis=1) + atm_pressure)
     sf_grad = sf_grad.at[:, -1].set(atm_pressure)
 
-    P = solve_poisson(sf_grad, Nx, Ny, dx, dy) 
+    pressure_solver.set_rhs(sf_grad)
+    pressure_solver.solve()
+    P = pressure_solver.get_solution()
+
+    # P = solve_poisson(sf_grad, Nx, Ny, dx, dy) 
+    # sf_grad = sf_grad.transpose()
+    # pressure_solver.set_rhs(sf_grad)
+    # pressure_solver.solve()
+    # P = pressure_solver.get_solution()
+    # P = P.transpose()
     return P
 
 def penalization(phi, alpha):
@@ -229,13 +238,19 @@ def update_phase(phi, U, current_dt, dx, dy, contact_angle):
 
     return phi
 
-def correction_step(U, dx, dy, dt, solution=None, div=None):
+def correction_step(U, dx, dy, dt, correction_solver=None, div=None):
     if div is None:
         div = jax_divergence(U, dx, dy) / dt
+    
+    div = div - jnp.mean(div)
+
+    correction_solver.set_rhs(div)
+    correction_solver.solve()
+    p_correction = correction_solver.get_solution()
 
     # p_correction = utils.solve_poisson_with_better_bc(div/dt, dx, dy)
     # p_correction = utils.solve_poisson_pyro(div/dt, dx, dy, solution=solution)
-    p_correction = utils.solve_poisson_pyamg(np.array(div), dx, dy, solution=solution)
+    # p_correction = utils.solve_poisson_pyamg(np.array(div), dx, dy, solution=correction_solver)
     U = U.at[..., 0].set(U[..., 0] - dt * jax_dx(p_correction, h=dx))
     U = U.at[..., 1].set(U[..., 1] - dt * jax_dy(p_correction, h=dy))
     return U, p_correction
@@ -247,24 +262,24 @@ def damp_divergence(U, dx, dy, xi, dt):
     U = U.at[..., 1].set(U[..., 1] - xi * dt * div_grad[..., 1])
     return U
 
-def ppe(U, dx, dy, dt, solution=None):
+def ppe(U, dx, dy, dt, correction_solver=None, div_threshold=0.05):
     max_div_threshold = 0.05
     # global correction_step    
-    U, solution = correction_step(U, dx, dy, dt, solution=solution)
+    U, solution = correction_step(U, dx, dy, dt, correction_solver=correction_solver)
     U = apply_velocity_boundary_conditions(U, 0.01, dy)
 
     # local corrections
     divergence, max_div, mean_div = check_continuity(U, dx, dy)
-    if mean_div > max_div_threshold:
+    if mean_div > div_threshold:
         # U = U.astype(np.half)
         half = int(U.shape[1] / 2)
         to_replace = int(U.shape[1] * 0.4)
         count = 0
-        while mean_div > max_div_threshold:
-            U, solution = correction_step(U, dx, dy, dt, solution=solution, div=divergence/dt)
+        while mean_div > div_threshold:
+            U, solution = correction_step(U, dx, dy, dt, correction_solver=correction_solver, div=divergence/dt)
             U = apply_velocity_boundary_conditions(U, 0.01, dy)
             divergence, max_div, mean_div = check_continuity(U, dx, dy)
-            if count % 5 == 0:
+            if count % 20 == 0:
                 sys.stdout.write(f"\rMax|mean div: {max_div:.6f}  | {mean_div:.6f}")
             if max_div < max_div_threshold:
                 break
@@ -314,6 +329,15 @@ def get_borders_of_droplet(phi):
 def cfl_dt(u_max, v_max, dx, dy, C=0.4):
     """Return Δt that gives desired CFL=C."""
     return C / (jnp.abs(u_max)/dx + jnp.abs(v_max)/dy)
+
+def create_sparse_solver(Nx, Ny, dx, dy, backend, boundary_conditions):
+    solver = SparseSolverWrapper(Nx, Ny, dx, dy, backend)
+    solver.set_top_boundary_condition(boundary_conditions[0])
+    solver.set_bottom_boundary_condition(boundary_conditions[1])
+    solver.set_left_boundary_condition(boundary_conditions[2])
+    solver.set_right_boundary_condition(boundary_conditions[3])
+    solver.create_sparse_matrix()
+    return solver
 
 def main():
     # Parse command line arguments
@@ -379,6 +403,7 @@ def main():
 
     # Initialize the phase field with a semicircle droplet
     phi = initialize_phase(Nx, Ny, radius)  # Initialize the phase field
+    phi = jnp.array(phi)
     phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
 
     # Initialize fields
@@ -420,6 +445,13 @@ def main():
         # Initialize from scratch
         start_step = 0
 
+    correction_solver = create_sparse_solver(Nx, Ny, dx, dy,
+                                              "pyamg",
+                                              ["neumann", "neumann", "neumann", "neumann"])
+    pressure_solver = create_sparse_solver(Nx, Ny, dx, dy,
+                                              "pyamg",
+                                              ["dirichlet", "dirichlet", "neumann", "neumann"])
+
     times = []
     # Main simulation loop
     cur_t = 0
@@ -431,7 +463,7 @@ def main():
         start_time = time.time()
         current_dt = dt_initial if step < 500 else dt
 
-        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.0005)
+        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.1)
         # print(f"Current dt: {current_dt}")
         if cfl_computed_dt != np.inf:
             current_dt = cfl_computed_dt
@@ -451,7 +483,8 @@ def main():
         divergence, max_div, mean_div = check_continuity(U, dx, dy)
             
         # Apply PPE
-        U = ppe(U, dx, dy, current_dt)
+        div_threshold = 0.01
+        U = ppe(U, dx, dy, current_dt, correction_solver, div_threshold)
 
         # beta = 0.01
         # Apply no-slip boundary conditions
@@ -465,7 +498,7 @@ def main():
         surface_tension = jax_apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
 
         # Update pressure
-        P = update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2)
+        P = update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2, pressure_solver)
         
         end_time = time.time()
         times.append(end_time - start_time)
@@ -488,6 +521,7 @@ def main():
             mass = np.sum(phi[phi > 0])
             create_joint_plot(
                 phi, U, P, surface_tension, current_dt, step, dx, dy, mass, rho1, rho2,
+                cur_t,
                 save_path=f'{login_dir}/joint_plot_step_{step}.png'
             )
 
