@@ -160,25 +160,13 @@ def apply_velocity_boundary_conditions(U, beta, dy):
     
     return U
 
-def update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2, pressure_solver, include_gravity=True):
+def update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2, pressure_solver):
     """Update the pressure field P based on the velocity field U and phase field phi."""
-    sf_grad = -jax_divergence(surface_tension, dx, dy)
+    sf_grad = jax_divergence(surface_tension, dx, dy)
     rho = jax_calculate_density(phi, rho1, rho2)
 
-    # Apply gravity only if include_gravity is True
-    if include_gravity:
-        mass_sum = jnp.cumsum(rho[..., ::-1] * g * dy, axis=1) + atm_pressure
-        mass_sum = mass_sum[:, ::-1]
-    else:
-        # No gravity - just use atmospheric pressure
-        mass_sum = jnp.full_like(rho, atm_pressure)
-
-    sf_grad = sf_grad.at[0, :].set(mass_sum[0, :])
-    sf_grad = sf_grad.at[-1, :].set(mass_sum[-1, :])
-    sf_grad = sf_grad.at[:, 0].set(mass_sum[:, 0])
-    sf_grad = sf_grad.at[:, -1].set(mass_sum[:, -1])
-    # sf_grad = sf_grad.at[:, 0].set(jnp.sum(rho * g * dy, axis=1) + atm_pressure)
-    # sf_grad = sf_grad.at[:, -1].set(atm_pressure)
+    sf_grad = sf_grad.at[:, 0].set(jnp.sum(rho * g * dy, axis=1) + atm_pressure)
+    sf_grad = sf_grad.at[:, -1].set(atm_pressure)
     pressure_solver.set_rhs(sf_grad)
     pressure_solver.solve()
     P = pressure_solver.get_solution()
@@ -1012,7 +1000,7 @@ def main():
         surface_tension = jax_apply_surface_tension_boundary_conditions(surface_tension, phi, contact_angle=contact_angle)
 
         # Update pressure
-        P = update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2, pressure_solver, include_gravity)
+        P = update_pressure(surface_tension, Nx, Ny, dx, dy, rho1, rho2, pressure_solver)
 
         end_time = time.time()
         times.append(end_time - start_time)
