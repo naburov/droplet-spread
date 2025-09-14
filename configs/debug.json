@@ -1,0 +1,42 @@
+{
+    "liquds": {
+        "2": "droplet of water",
+        "1": "air"
+    },
+    "physical_params": {
+        "rho2": 1000.0,
+        "Re2": 50.0,
+        "We2": 0.1,
+        "rho1": 1.0,
+        "Re1": 3.0,
+        "We1": 0.1,
+        "Pe": 10.0,
+        "epsilon": 0.015,
+        "alpha": 1.0,
+        "phase_penalty": 1000.0,
+        "contact_angle": 90,
+        "include_gravity": true,
+        "Fr": 1.0,
+        "g": -1.0,
+        "atm_pressure": -100.0
+    },
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.0,
+        "Nx": 100,
+        "Ny": 100
+    },
+    "time_params": {
+        "dt": 0.000007,
+        "t_max": 20.0,
+        "checkpoint_interval": 400,
+        "dt_initial": 0.000007
+    },
+    "initial_conditions": {
+        "droplet_radius": 0.225
+    },
+    "restart": {
+        "restart_from": "None",
+        "_restart_from": "/Users/burovnikita/Desktop/Study/PhD/droplet/droplet_spreading_modeling/experiment_20250508_223401/checkpoints/checkpoint_007600.npz"
+    }
+} 

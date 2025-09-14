@@ -1,0 +1,94 @@
+{
+    "liquds": {
+        "1": "air",
+        "2": "water droplet"
+    },
+    "physical_params": {
+        "rho2": 1000.0,
+        "Re2": 100.0,
+        "We2": 10.0,
+        "rho1": 1.0,
+        "Re1": 10.0,
+        "We1": 0.1,
+        "Pe": 1.0,
+        "epsilon": 0.02,
+        "alpha": 1.0,
+        "phase_penalty": 1000.0,
+        "contact_angle": 60,
+        "chemical_potential_bc_strength": 0.8,
+        "include_gravity": true,
+        "Fr": 1.0,
+        "g": -10.0,
+        "atm_pressure": 10000.0
+    },
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.0,
+        "Nx": 128,
+        "Ny": 128
+    },
+    "time_params": {
+        "dt": 0.001,
+        "t_max": 0.1,
+        "checkpoint_interval": 10,
+        "dt_initial": 0.001,
+        "cfl_number": 1.0
+    },
+    "initial_conditions": {
+        "droplet_radius": 0.2
+    },
+    "boundary_conditions": {
+        "pressure": {
+            "top": "dirichlet",
+            "bottom": "neumann",
+            "left": "dirichlet",
+            "right": "dirichlet"
+        },
+        "velocity": {
+            "top": "neumann",
+            "bottom": "no_slip",
+            "left": "periodic",
+            "right": "periodic"
+        },
+        "phase_field": {
+            "top": "neumann",
+            "bottom": "contact_angle",
+            "left": "periodic",
+            "right": "periodic"
+        }
+    },
+    "solver_params": {
+        "pressure_solver": {
+            "backend": "scipy",
+            "accel": "bicgstab",
+            "tol": 0.01,
+            "maxiter": 15000
+        },
+        "correction_solver": {
+            "backend": "scipy", 
+            "accel": "bicgstab",
+            "tol": 0.01,
+            "maxiter": 15000
+        },
+        "divergence_threshold": 0.01,
+        "max_correction_iterations": 150
+    },
+    "plotting_params": {
+        "figure_size": [20, 16],
+        "dpi": 150,
+        "colormap": "plasma",
+        "save_format": "png",
+        "show_velocity_vectors": true,
+        "vector_density": 15,
+        "vector_scale": 20,
+        "show_contours": true,
+        "contour_levels": 25,
+        "show_colorbar": true,
+        "title_fontsize": 18,
+        "label_fontsize": 16,
+        "tick_fontsize": 14
+    },
+    "restart": {
+        "restart_from": "None"
+    }
+} 
