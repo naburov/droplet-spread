@@ -635,35 +635,12 @@ def correction_step(U, dx, dy, dt, correction_solver=None, div=None):
     print(f"DEBUG correction_step: Input U min/max: {np.array(U).min():.6f} / {np.array(U).max():.6f}")
     
     if div is None:
-        # Use finite differences for divergence calculation
-        u_x = jax_dx(U[..., 0], h=dx)
-        v_y = jax_dy(U[..., 1], h=dy)
-        div = u_x + v_y
-        
-        print(f"DEBUG correction_step: U[..., 0] min/max: {np.array(U[..., 0]).min():.6f} / {np.array(U[..., 0]).max():.6f}")
-        print(f"DEBUG correction_step: U[..., 1] min/max: {np.array(U[..., 1]).min():.6f} / {np.array(U[..., 1]).max():.6f}")
-        print(f"DEBUG correction_step: dx = {dx:.10f}, dy = {dy:.10f}")
-        print(f"DEBUG correction_step: u_x min/max: {np.array(u_x).min():.6f} / {np.array(u_x).max():.6f}")
-        print(f"DEBUG correction_step: v_y min/max: {np.array(v_y).min():.6f} / {np.array(v_y).max():.6f}")
-        print(f"DEBUG correction_step: div min/max: {np.array(div).min():.6f} / {np.array(div).max():.6f}")
-        
-        # Check boundary values specifically
-        print(f"DEBUG correction_step: u_x[0, :5] (bottom): {np.array(u_x[0, :5])}")
-        print(f"DEBUG correction_step: u_x[-1, :5] (top): {np.array(u_x[-1, :5])}")
-        print(f"DEBUG correction_step: v_y[:5, 0] (left): {np.array(v_y[:5, 0])}")
-        print(f"DEBUG correction_step: v_y[:5, -1] (right): {np.array(v_y[:5, -1])}")
+        div = jax_divergence(U, dx, dy) / dt
     
     div = div - jnp.mean(div)
     print(f"DEBUG correction_step: After mean removal div min/max: {np.array(div).min():.6f} / {np.array(div).max():.6f}")
     
-    # DEBUG: Check what we're passing to the solver
-    rhs = -div / dt
-    print(f"DEBUG solver: dt = {dt:.10f}")
-    print(f"DEBUG solver: RHS min/max: {np.array(rhs).min():.6f} / {np.array(rhs).max():.6f}")
-    print(f"DEBUG solver: RHS contains NaN: {np.any(np.isnan(np.array(rhs)))}")
-    print(f"DEBUG solver: RHS contains Inf: {np.any(np.isinf(np.array(rhs)))}")
-    
-    correction_solver.set_rhs(rhs)
+    correction_solver.set_rhs(div)
     correction_solver.solve()
     p_correction = correction_solver.get_solution()
     

@@ -30,7 +30,7 @@ def jax_laplacian(f, dx=1e-5, dy=1e-5):
 
 @jit
 def jax_divergence(f, dx, dy):
-    return jax_dx(f[..., 0], h=dx) + jax_dy(f[..., 1], h=dy)
+    return jax_dx(f[..., 0], h=dy) + jax_dy(f[..., 1], h=dx)
 
 @jit
 def jax_gradient(f, dx, dy):
