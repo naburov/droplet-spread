@@ -213,13 +213,12 @@ def update_phase(phi, U, current_dt, dx, dy, contact_angle):
     Args:
         phi (np.ndarray): Current phase field (shape: (Nx, Ny)).
         U (np.ndarray): Velocity field (shape: (Nx, Ny, 2)).
-        current_dt (float): Time step.
-        dx (float): Grid spacing in x direction.
-        dy (float): Grid spacing in y direction.
-        contact_angle (float): Contact angle for boundary conditions.
+        Pe (float): Peclet number.
+        epsilon (float): Interface thickness parameter.
     """
     # Step 1: Calculate the gradient of phi
     grad_phi = jax_gradient(phi, dx, dy)  # Shape: (Nx, Ny, 2)
+    # grad_phi_mag = np.sqrt(grad_phi[..., 0]**2 + grad_phi[..., 1]**2)
 
     # Step 2: Calculate the convective term
     convective_term = U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]
@@ -227,16 +226,35 @@ def update_phase(phi, U, current_dt, dx, dy, contact_angle):
     # Step 3: Calculate the Laplacian of phi
     lap_phi = jax_laplacian(phi, dx, dy)
 
-    # Step 4: Calculate chemical potential (standard Allen-Cahn)
+    # Step 4: Calculate stabilized chemical potential with interface thickness control
+    # This formulation helps maintain the interface thickness
     chemical_potential = jax_df_2(phi) - epsilon**2 * lap_phi
+    lagrange_multiplier = jnp.mean(chemical_potential)
+    source_term = -1/Pe * (chemical_potential - lagrange_multiplier)
 
-    # Step 5: Update phi using explicit Euler
-    phi_new = phi - current_dt * (convective_term + Pe * chemical_potential)
+    # Add stabilization term to maintain interface thickness
+    # stabilization = epsilon * (grad_phi_mag - 1/epsilon) * (grad_phi_mag > 1/epsilon)
+    # chemical_potential += stabilization
 
-    # Step 6: Apply contact angle boundary conditions
-    phi_new = jax_apply_contact_angle_boundary_conditions(phi_new, dx, dy, contact_angle=contact_angle)
+    # Step 5: Calculate the source term using the stabilized chemical potential
+    # chem_grad = utils.gradient(chemical_potential, dx, dy)
+    # div_chem = utils.numerical_derivative(chem_grad[..., 0], axis=0, h=dx) + \
+    #            utils.numerical_derivative(chem_grad[..., 1], axis=1, h=dy)
+    # source_term = div_chem / Pe
 
-    return phi_new
+    # Step 6: Right-hand side of the phase equation
+    rhs_phi = -convective_term + source_term
+
+    # Step 7: Update phase field
+    phi = phi + current_dt * rhs_phi
+
+    # Step 8: Apply boundary conditions and maintain phase field bounds
+    phi = jax_apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
+    
+    # Ensure phi stays within physical bounds [-1, 1]
+    phi = jnp.clip(phi, -1.0, 1.0)
+
+    return phi
 
 def update_phase_extended(phi, U, current_dt, dx, dy, contact_angle, rho1, rho2, Pe, epsilon):
     """Update the phase field using the explicit Euler method with proper physical mass conservation.
@@ -774,8 +792,8 @@ def cfl_dt(u_max, v_max, dx, dy, C=0.4):
                      C * min_grid_spacing / max_velocity, 
                      jnp.inf)
 
-def create_sparse_solver(Nx, Ny, dx, dy, backend, boundary_conditions, args=None):
-    solver = SparseSolverWrapper(Nx, Ny, dx, dy, backend, args)
+def create_sparse_solver(Nx, Ny, dx, dy, backend, boundary_conditions):
+    solver = SparseSolverWrapper(Nx, Ny, dx, dy, backend)
     solver.set_top_boundary_condition(boundary_conditions[0])
     solver.set_bottom_boundary_condition(boundary_conditions[1])
     solver.set_left_boundary_condition(boundary_conditions[2])
@@ -942,52 +960,13 @@ def main():
         # Initialize from scratch
         start_step = 0
     
-    # Create solvers using configuration parameters
-    # Extract solver parameters
-    pressure_solver_config = config.get("solver_params", {}).get("pressure_solver", {})
-    correction_solver_config = config.get("solver_params", {}).get("correction_solver", {})
-    boundary_conditions = config.get("boundary_conditions", {})
-    
-    # Set default values if not specified
-    pressure_backend = pressure_solver_config.get("backend", "pyamg")
-    pressure_args = {
-        'accel': pressure_solver_config.get("accel", "bicgstab"),
-        'tol': pressure_solver_config.get("tol", 0.05),
-        'maxiter': pressure_solver_config.get("maxiter", 10000)
-    }
-    
-    correction_backend = correction_solver_config.get("backend", "pyamg")
-    correction_args = {
-        'accel': correction_solver_config.get("accel", "bicgstab"),
-        'tol': correction_solver_config.get("tol", 0.05),
-        'maxiter': correction_solver_config.get("maxiter", 10000)
-    }
-    
-    # Extract boundary conditions
-    pressure_bc = boundary_conditions.get("pressure", {})
-    velocity_bc = boundary_conditions.get("velocity", {})
-    
-    # Map periodic BCs to supported types (periodic -> neumann for now)
-    def map_bc(bc_type, default):
-        if bc_type == "periodic":
-            return "neumann"
-        return bc_type if bc_type in ["dirichlet", "neumann"] else default
-    
-    # Create solvers with configuration parameters
+    # Create solvers using original simple approach
     correction_solver = create_sparse_solver(Nx, Ny, dx, dy,
-                                              correction_backend,
-                                              [map_bc(pressure_bc.get("top"), "dirichlet"), 
-                                               map_bc(pressure_bc.get("bottom"), "neumann"), 
-                                               map_bc(pressure_bc.get("left"), "dirichlet"), 
-                                               map_bc(pressure_bc.get("right"), "dirichlet")],
-                                              correction_args)
+                                              "pyamg",
+                                              ["neumann", "neumann", "neumann", "neumann"])
     pressure_solver = create_sparse_solver(Nx, Ny, dx, dy,
-                                              pressure_backend,
-                                              [map_bc(pressure_bc.get("top"), "dirichlet"), 
-                                               map_bc(pressure_bc.get("bottom"), "neumann"), 
-                                               map_bc(pressure_bc.get("left"), "dirichlet"), 
-                                               map_bc(pressure_bc.get("right"), "dirichlet")],
-                                              pressure_args)
+                                              "pyamg",
+                                              ["dirichlet", "dirichlet", "neumann", "neumann"])
 
     times = []
     # Main simulation loop
