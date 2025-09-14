@@ -82,9 +82,9 @@ def check_continuity(U, dx, dy):
     Check continuity equation condition (∇·U = 0)
     Returns the divergence field and maximum absolute divergence
     """
-    # Calculate divergence: du/dx + dv/dy using proper finite differences
-    u_x = jax_dx_proper(U[..., 0], h=dx)
-    v_y = jax_dy_proper(U[..., 1], h=dy)
+    # Calculate divergence: du/dx + dv/dy
+    u_x = jax_dx(U[..., 0], h=dx)
+    v_y = jax_dy(U[..., 1], h=dy)
     
     divergence = u_x + v_y
     max_div = jnp.max(jnp.abs(divergence))
@@ -92,47 +92,6 @@ def check_continuity(U, dx, dy):
     
     return divergence, max_div, mean_div
 
-@jit
-def jax_dx_proper(f, h=1e-5):
-    """Proper finite difference for du/dx with boundary conditions."""
-    Nx, Ny = f.shape
-    result = jnp.zeros_like(f)
-    
-    # Interior points: central difference
-    result = result.at[1:-1, :].set((f[2:, :] - f[:-2, :]) / (2 * h))
-    
-    # Boundaries: forward/backward difference
-    # Bottom boundary (i=0): forward difference
-    result = result.at[0, :].set((f[1, :] - f[0, :]) / h)
-    # Top boundary (i=Nx-1): backward difference  
-    result = result.at[-1, :].set((f[-1, :] - f[-2, :]) / h)
-    
-    return result
-
-@jit
-def jax_dy_proper(f, h=1e-5):
-    """Proper finite difference for dv/dy with boundary conditions."""
-    Nx, Ny = f.shape
-    result = jnp.zeros_like(f)
-    
-    # Interior points: central difference
-    result = result.at[:, 1:-1].set((f[:, 2:] - f[:, :-2]) / (2 * h))
-    
-    # Boundaries: forward/backward difference
-    # Left boundary (j=0): forward difference
-    result = result.at[:, 0].set((f[:, 1] - f[:, 0]) / h)
-    # Right boundary (j=Ny-1): backward difference
-    result = result.at[:, -1].set((f[:, -1] - f[:, -2]) / h)
-    
-    return result
-
-@jit
-def jax_gradient_proper(f, dx, dy):
-    """Proper gradient calculation using boundary-aware finite differences."""
-    grad_x = jax_dx_proper(f, h=dx)
-    grad_y = jax_dy_proper(f, h=dy)
-    grad = jnp.stack([grad_x, grad_y], axis=-1)
-    return grad
 
 def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, include_gravity=False):
     """Update the velocity field U based on the phase field phi."""
@@ -141,9 +100,9 @@ def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2, i
     rho = jax_calculate_density(phi, rho1, rho2)
     rho_stacked = jnp.stack([rho, rho], axis=-1) + 1e-6
 
-    # Calculate gradients and terms using proper finite differences
-    grad_U = jax_gradient_proper(U, dx, dy)
-    p_grad = jax_gradient_proper(p, dx, dy)
+    # Calculate gradients and terms
+    grad_U = jax_gradient(U, dx, dy)
+    p_grad = jax_gradient(p, dx, dy)
     
     # Calculate viscous term with proper scaling
     viscous_term = compute_viscous_term(U, dx, dy, Re)
@@ -640,9 +599,9 @@ def correction_step(U, dx, dy, dt, correction_solver=None, div=None):
     print(f"DEBUG correction_step: Input U min/max: {np.array(U).min():.6f} / {np.array(U).max():.6f}")
     
     if div is None:
-        # Use proper finite differences for divergence calculation
-        u_x = jax_dx_proper(U[..., 0], h=dx)
-        v_y = jax_dy_proper(U[..., 1], h=dy)
+        # Use finite differences for divergence calculation
+        u_x = jax_dx(U[..., 0], h=dx)
+        v_y = jax_dy(U[..., 1], h=dy)
         div = u_x + v_y
         
         print(f"DEBUG correction_step: U[..., 0] min/max: {np.array(U[..., 0]).min():.6f} / {np.array(U[..., 0]).max():.6f}")
@@ -677,9 +636,9 @@ def correction_step(U, dx, dy, dt, correction_solver=None, div=None):
     print(f"DEBUG solver: p_correction contains NaN: {np.any(np.isnan(np.array(p_correction)))}")
     print(f"DEBUG solver: p_correction contains Inf: {np.any(np.isinf(np.array(p_correction)))}")
     
-    # DEBUG: Check pressure gradients using proper finite differences
-    p_grad_x = jax_dx_proper(p_correction, h=dx)
-    p_grad_y = jax_dy_proper(p_correction, h=dy)
+    # DEBUG: Check pressure gradients using finite differences
+    p_grad_x = jax_dx(p_correction, h=dx)
+    p_grad_y = jax_dy(p_correction, h=dy)
     print(f"DEBUG solver: p_grad_x min/max: {np.array(p_grad_x).min():.6f} / {np.array(p_grad_x).max():.6f}")
     print(f"DEBUG solver: p_grad_y min/max: {np.array(p_grad_y).min():.6f} / {np.array(p_grad_y).max():.6f}")
     
@@ -1100,6 +1059,7 @@ def main():
                 mass=mass,
                 rho1=rho1,
                 rho2=rho2,
+                cur_t=cur_t,
                 save_path=f'{login_dir}/joint_plot_step_{step}.png',
                 # plotting_params=plotting_params
             )
