@@ -10,6 +10,12 @@ from .jax_utils import (
     jax_calculate_reynolds_number, jax_calculate_density, jax_df_2,
     jax_apply_contact_angle_boundary_conditions
 )
+# Import proven working functions from jax_main
+import sys
+import os
+# Add parent directory to path to import the working jax_main.py
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import jax_main
 from .sparse_solver import SparseSolverWrapper
 from .plot_utils import create_joint_plot, save_checkpoint, load_checkpoint
 
@@ -100,13 +106,24 @@ class DropletSimulator:
         # Get current parameters
         p = self.config.physical
         
+        # Set up global variables for jax_main functions
+        jax_main.phi = self.phi
+        jax_main.Re1 = p.Re1
+        jax_main.Re2 = p.Re2
+        jax_main.Pe = p.Pe
+        jax_main.epsilon = p.epsilon
+        jax_main.contact_angle = p.contact_angle
+        jax_main.Fr = p.Fr
+        jax_main.g = p.g
+        jax_main.atm_pressure = p.atm_pressure
+        
         # Time step
         current_dt = self.config.time.dt_initial if self.step < 500 else self.config.time.dt
         
-        # CFL condition
-        cfl_dt = self.cfl_condition()
-        if cfl_dt != np.inf:
-            current_dt = min(cfl_dt, current_dt)
+        # CFL condition using proven function
+        cfl_computed_dt = jax_main.cfl_dt(self.U[..., 0].max(), self.U[..., 1].max(), self.dx, self.dy, C=self.config.time.cfl_number)
+        if cfl_computed_dt != np.inf:
+            current_dt = min(cfl_computed_dt, current_dt)
         
         # Surface tension
         surface_tension = jax_surface_tension_force(
@@ -116,198 +133,33 @@ class DropletSimulator:
             surface_tension, self.phi, contact_angle=p.contact_angle
         )
         
-        # Update velocity
-        self.U = self._update_velocity(
+        # Update velocity using proven function
+        self.U = jax_main.update_velocity(
             self.U, self.P, surface_tension, current_dt, 
-            self.dx, self.dy, p.rho1, p.rho2, p.include_gravity
+            self.dx, self.dy, p.rho1, p.rho2, include_gravity=p.include_gravity
         )
         
-        # Apply boundary conditions
-        self.U = self._apply_velocity_boundary_conditions(self.U, 0.01, self.dy)
+        # Apply boundary conditions using proven function
+        self.U = jax_main.apply_velocity_boundary_conditions(self.U, 0.01, self.dy)
         
-        # Pressure projection
-        self.U = self.ppe(self.U, self.dx, self.dy, current_dt)
+        # Pressure projection using proven function
+        self.U = jax_main.ppe(self.U, self.dx, self.dy, current_dt, self.correction_solver, div_threshold=self.config.solver_params.divergence_threshold)
         
-        # Update phase field
-        self.phi = self._update_phase_field(
-            self.phi, self.U, current_dt, self.dx, self.dy,
-            p.contact_angle, p.rho1, p.rho2, p.Pe, p.epsilon
+        # Update phase field using proven function
+        self.phi = jax_main.update_phase(
+            self.phi, self.U, current_dt, self.dx, self.dy, p.contact_angle
         )
         
-        # Update pressure
-        self.P = self._update_pressure(
-            surface_tension, self.Nx, self.Ny, self.dx, self.dy, p.rho1, p.rho2
+        # Update pressure using proven function
+        self.P = jax_main.update_pressure(
+            surface_tension, self.Nx, self.Ny, self.dx, self.dy, p.rho1, p.rho2, self.pressure_solver
         )
         
         # Update time
         self.t += current_dt
         self.step += 1
     
-    def cfl_condition(self, C=None):
-        """Calculate CFL-limited time step."""
-        if C is None:
-            C = self.config.time.cfl_number
-        u_max = np.max(np.abs(self.U[..., 0]))
-        v_max = np.max(np.abs(self.U[..., 1]))
-        return C / (u_max/self.dx + v_max/self.dy) if (u_max + v_max) > 0 else np.inf
     
-    def _update_velocity(self, U, P, surface_tension, dt, dx, dy, rho1, rho2, include_gravity):
-        """Update velocity field."""
-        # Get physical parameters
-        p = self.config.physical
-        
-        # Calculate the Reynolds number and density
-        Re = jax_calculate_reynolds_number(self.phi, p.Re1, p.Re2)
-        rho = jax_calculate_density(self.phi, rho1, rho2)
-        rho_stacked = jnp.stack([rho, rho], axis=-1) + 1e-6
-
-        # Calculate gradients and terms
-        grad_U = jax_gradient(U, dx, dy)
-        p_grad = jax_gradient(P, dx, dy)
-        
-        # Calculate viscous term with proper scaling
-        viscous_term = self._compute_viscous_term(U, dx, dy, Re)
-        
-        # Calculate convective term (in conservative form)
-        convective_term = jnp.stack(
-            [
-                U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1],
-                U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1]
-            ],
-            axis=-1
-        )
-
-        # Combine terms with proper density scaling
-        rhs_U = (
-            -p_grad / rho_stacked +  # Pressure term
-            viscous_term / rho_stacked +  # Viscous term
-            -surface_tension / rho_stacked +  # Surface tension
-            -convective_term  # Convective term (already includes velocity)
-        )
-
-        # Add gravity if included
-        if include_gravity:
-            rhs_U = rhs_U + (1 / p.Fr) * jnp.stack([jnp.zeros_like(U[..., 0]), -jnp.ones_like(U[..., 1])], axis=-1)
-
-        # Update velocity field using explicit Euler
-        U = U + dt * rhs_U
-        
-        return U
-    
-    def _update_phase_field(self, phi, U, dt, dx, dy, contact_angle, rho1, rho2, Pe, epsilon):
-        """Update phase field."""
-        # Step 1: Calculate the gradient of phi
-        grad_phi = jax_gradient(phi, dx, dy)  # Shape: (Nx, Ny, 2)
-
-        # Step 2: Calculate the convective term
-        convective_term = U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]
-
-        # Step 3: Calculate the Laplacian of phi
-        lap_phi = jax_laplacian(phi, dx, dy)
-
-        # Step 4: Calculate stabilized chemical potential with interface thickness control
-        chemical_potential = jax_df_2(phi) - epsilon**2 * lap_phi
-        lagrange_multiplier = jnp.mean(chemical_potential)
-        source_term = -1/Pe * (chemical_potential - lagrange_multiplier)
-
-        # Step 5: Right-hand side of the phase equation
-        rhs_phi = -convective_term + source_term
-
-        # Step 6: Update phase field
-        phi = phi + dt * rhs_phi
-
-        # Step 7: Apply boundary conditions and maintain phase field bounds
-        phi = jax_apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
-        
-        # Ensure phi stays within physical bounds [-1, 1]
-        phi = jnp.clip(phi, -1.0, 1.0)
-
-        return phi
-    
-    def _update_pressure(self, surface_tension, Nx, Ny, dx, dy, rho1, rho2):
-        """Update pressure field."""
-        sf_grad = jax_divergence(surface_tension, dx, dy)
-        rho = jax_calculate_density(self.phi, rho1, rho2)
-
-        sf_grad = sf_grad.at[:, 0].set(jnp.sum(rho * self.config.physical.g * dy, axis=1) + self.config.physical.atm_pressure)
-        sf_grad = sf_grad.at[:, -1].set(self.config.physical.atm_pressure)
-
-        self.pressure_solver.set_rhs(sf_grad)
-        self.pressure_solver.solve()
-        P = self.pressure_solver.get_solution()
-
-        return P
-    
-    def ppe(self, U, dx, dy, dt):
-        """Pressure projection - using existing function."""
-        return self._ppe(U, dx, dy, dt, self.correction_solver)
-    
-    def _compute_viscous_term(self, U, dx, dy, Re):
-        """Simplified viscous term for constant viscosity: (1/Re) * ∇²U"""
-        return jnp.stack([jax_laplacian(U[..., 0], dx, dy) / Re, 
-                          jax_laplacian(U[..., 1], dx, dy) / Re], axis=-1)
-    
-    def _check_continuity(self, U, dx, dy):
-        """Check continuity equation condition (∇·U = 0)"""
-        u_x = jax_dx(U[..., 0], h=dx)
-        v_y = jax_dy(U[..., 1], h=dy)
-        
-        divergence = u_x + v_y
-        max_div = jnp.max(jnp.abs(divergence))
-        mean_div = jnp.mean(jnp.abs(divergence))
-        
-        return divergence, max_div, mean_div
-    
-    def _apply_velocity_boundary_conditions(self, U, beta, dy):
-        """Apply physically appropriate boundary conditions to velocity field."""
-        U = U.at[:, 0, 1].set(0.0)
-        U = U.at[:, 0, 0].set(U[:, 1, 0] - dy * 1/beta * U[:, 1, 0])
-        U = U.at[:, -1, :].set(U[:, -2, :])
-        U = U.at[0, :, :].set(U[1, :, :])
-        U = U.at[-1, :, :].set(U[-2, :, :])
-        return U
-    
-    def _correction_step(self, U, dx, dy, dt, correction_solver=None, div=None):
-        """Single correction step for pressure projection."""
-        if div is None:
-            div = jax_divergence(U, dx, dy) / dt
-        
-        div = div - jnp.mean(div)
-        correction_solver.set_rhs(div)
-        correction_solver.solve()
-        p_correction = correction_solver.get_solution()
-        
-        U = U.at[..., 0].set(U[..., 0] - dt * jax_dx(p_correction, h=dx))
-        U = U.at[..., 1].set(U[..., 1] - dt * jax_dy(p_correction, h=dy))
-        return U, p_correction
-    
-    def _ppe(self, U, dx, dy, dt, correction_solver=None, div_threshold=None):
-        """Pressure projection with divergence correction."""
-        if div_threshold is None:
-            div_threshold = self.config.solver_params.divergence_threshold
-        max_div_threshold = div_threshold
-        max_iterations = self.config.solver_params.max_correction_iterations
-        
-        U, solution = self._correction_step(U, dx, dy, dt, correction_solver=correction_solver)
-        U = self._apply_velocity_boundary_conditions(U, 0.01, dy)
-        
-        divergence, max_div, mean_div = self._check_continuity(U, dx, dy)
-        if mean_div > div_threshold:
-            count = 0
-            while mean_div > div_threshold and count < max_iterations:
-                U, solution = self._correction_step(U, dx, dy, dt, correction_solver=correction_solver, div=divergence/dt)
-                U = self._apply_velocity_boundary_conditions(U, 0.01, dy)
-                divergence, max_div, mean_div = self._check_continuity(U, dx, dy)
-                if count % 20 == 0:
-                    print(f"\rMax|mean div: {max_div:.6f}  | {mean_div:.6f}")
-                if max_div < max_div_threshold:
-                    break
-                count += 1
-            if count >= max_iterations:
-                print(f"\nMax iterations ({max_iterations}) reached")
-            else:
-                print(f"\nCorrected in {count} iterations \n")
-        return U
     
     def run(self, output_dir: str = None):
         """Run complete simulation."""
@@ -346,3 +198,8 @@ class DropletSimulator:
             save_path=f'{output_dir}/joint_plot_step_{self.step}.png',
             plotting_params=plot_params
         )
+    
+    def get_continuity_info(self):
+        """Get continuity information using proven function."""
+        divergence, max_div, mean_div = jax_main.check_continuity(self.U, self.dx, self.dy)
+        return divergence, max_div, mean_div
