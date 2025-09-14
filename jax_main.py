@@ -2,11 +2,12 @@ import os
 import argparse
 import json
 from datetime import datetime
+from re import M
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
-import utils
+# import utils
  # Assuming utils.py is in the same directory
 from scipy.sparse import diags
 from scipy.sparse.linalg import spsolve
@@ -14,7 +15,7 @@ import time
 import sys
 import jax.numpy as jnp
 import jax
-from jax import jit
+from jax import vmap, jit
 from scipy.sparse import kron, identity, linalg
 from jax_utils import (
     jax_calculate_density,
@@ -404,7 +405,7 @@ def main():
     # Initialize the phase field with a semicircle droplet
     phi = initialize_phase(Nx, Ny, radius)  # Initialize the phase field
     phi = jnp.array(phi)
-    phi = utils.apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
+    phi = jax_apply_contact_angle_boundary_conditions(phi, dx, dy, contact_angle=contact_angle)
 
     # Initialize fields
     U = np.zeros((Nx, Ny, 2))  # Velocity field (2D vector field)
@@ -463,11 +464,10 @@ def main():
         start_time = time.time()
         current_dt = dt_initial if step < 500 else dt
 
-        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.1)
-        # print(f"Current dt: {current_dt}")
+        cfl_computed_dt = cfl_dt(U[..., 0].max(), U[..., 1].max(), dx, dy, C=0.01)
         if cfl_computed_dt != np.inf:
             current_dt = cfl_computed_dt
-            # print(f"Updated dt: {current_dt}")
+            print(f"Updated dt: {current_dt}")
         cur_t += current_dt
 
         surface_tension = jax_surface_tension_force(phi, epsilon, We1, We2, dx, dy)
@@ -520,8 +520,17 @@ def main():
         if step % checkpoint_interval == 0:  # Plot every 25 steps
             mass = np.sum(phi[phi > 0])
             create_joint_plot(
-                phi, U, P, surface_tension, current_dt, step, dx, dy, mass, rho1, rho2,
-                cur_t,
+                phi=phi,
+                U=U,
+                P=P,
+                surface_tension=surface_tension,
+                dt=current_dt,
+                step=step,
+                dx=dx,
+                dy=dy,
+                mass=mass,
+                rho1=rho1,
+                rho2=rho2,
                 save_path=f'{login_dir}/joint_plot_step_{step}.png'
             )
 
