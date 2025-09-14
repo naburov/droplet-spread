@@ -207,7 +207,38 @@ def penalization(phi, alpha):
     return alpha * penalty
 
 @jit
-def update_phase(phi, U, current_dt, dx, dy, contact_angle, rho1, rho2, Pe, epsilon):
+def update_phase(phi, U, current_dt, dx, dy, contact_angle):
+    """Update the phase field using the explicit Euler method with interface thickness control.
+    
+    Args:
+        phi (np.ndarray): Current phase field (shape: (Nx, Ny)).
+        U (np.ndarray): Velocity field (shape: (Nx, Ny, 2)).
+        current_dt (float): Time step.
+        dx (float): Grid spacing in x direction.
+        dy (float): Grid spacing in y direction.
+        contact_angle (float): Contact angle for boundary conditions.
+    """
+    # Step 1: Calculate the gradient of phi
+    grad_phi = jax_gradient(phi, dx, dy)  # Shape: (Nx, Ny, 2)
+
+    # Step 2: Calculate the convective term
+    convective_term = U[..., 0] * grad_phi[..., 0] + U[..., 1] * grad_phi[..., 1]
+
+    # Step 3: Calculate the Laplacian of phi
+    lap_phi = jax_laplacian(phi, dx, dy)
+
+    # Step 4: Calculate chemical potential (standard Allen-Cahn)
+    chemical_potential = jax_df_2(phi) - epsilon**2 * lap_phi
+
+    # Step 5: Update phi using explicit Euler
+    phi_new = phi - current_dt * (convective_term + Pe * chemical_potential)
+
+    # Step 6: Apply contact angle boundary conditions
+    phi_new = jax_apply_contact_angle_boundary_conditions(phi_new, dx, dy, contact_angle=contact_angle)
+
+    return phi_new
+
+def update_phase_extended(phi, U, current_dt, dx, dy, contact_angle, rho1, rho2, Pe, epsilon):
     """Update the phase field using the explicit Euler method with proper physical mass conservation.
     
     Args:
@@ -1009,11 +1040,7 @@ def main():
         # U = apply_velocity_boundary_conditions(U, beta, dy)
 
         # Apply contact angle boundary conditions
-        phi = update_phase_field(phi, U, current_dt, dx, dy, 
-                                 contact_angle, rho1, rho2, Pe, epsilon,
-                                 method="cahn_hilliard_stable",
-                                 mobility=1.0,  # Conservative mobility for water-air interface
-                                 chemical_potential_bc_strength=chemical_potential_bc_strength)
+        phi = update_phase(phi, U, current_dt, dx, dy, contact_angle)
         
         # Recompute surface tension
         surface_tension = jax_surface_tension_force(phi, epsilon, We1, We2, dx, dy)
