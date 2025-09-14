@@ -150,8 +150,7 @@ def apply_velocity_boundary_conditions(U, beta, dy):
     U = U.at[:, 0, 0].set(U[:, 1, 0] - dy * 1/beta * U[:, 1, 0])
 
     # Top boundary (open atmosphere): Zero-gradient condition
-    # U = U.at[:, -1, :].set(U[:, -2, :])
-    U = U.at[:, -1, :].set(0.0)
+    U = U.at[:, -1, :].set(U[:, -2, :])
     
     # Left and right boundaries: Zero-gradient condition
     U = U.at[0, :, :].set(U[1, :, :])
@@ -706,41 +705,28 @@ def damp_divergence(U, dx, dy, xi, dt):
     return U
 
 def ppe(U, dx, dy, dt, correction_solver=None, div_threshold=0.05):
-    beta = 0.01
+    max_div_threshold = 0.05
     # global correction_step    
     U, solution = correction_step(U, dx, dy, dt, correction_solver=correction_solver)
-    U = apply_velocity_boundary_conditions(U, beta, dy)
+    U = apply_velocity_boundary_conditions(U, 0.01, dy)
 
     # local corrections
     divergence, max_div, mean_div = check_continuity(U, dx, dy)
-    
-    prev_mean_div = mean_div
-
-    if mean_div > div_threshold or max_div > div_threshold:
+    if mean_div > div_threshold:
+        # U = U.astype(np.half)
+        half = int(U.shape[1] / 2)
+        to_replace = int(U.shape[1] * 0.4)
         count = 0
-        while mean_div > div_threshold or max_div > div_threshold:
-            # Store current state before attempting correction
-            prev_mean_div = mean_div
-            prev_max_div = max_div
-            
-            U, solution = correction_step(U, dx, dy, dt, correction_solver=correction_solver, div=divergence)
-            U = apply_velocity_boundary_conditions(U, beta, dy)
+        while mean_div > div_threshold:
+            U, solution = correction_step(U, dx, dy, dt, correction_solver=correction_solver, div=divergence/dt)
+            U = apply_velocity_boundary_conditions(U, 0.01, dy)
             divergence, max_div, mean_div = check_continuity(U, dx, dy)
-            
-            # Check if divergence is rising - break if it's getting worse
-            if mean_div > 2 * prev_mean_div:
-                sys.stdout.write(f"\nDivergence rising ({mean_div:.6f} > {prev_mean_div:.6f}), breaking\n")
-                break
-                
             if count % 20 == 0:
                 sys.stdout.write(f"\rMax|mean div: {max_div:.6f}  | {mean_div:.6f}")
-            count += 1
-            
-            # Safety exit after too many iterations
-            if count > 100:
-                sys.stdout.write(f"\nMax iterations reached\n")
+            if max_div < max_div_threshold:
                 break
-        sys.stdout.write(f"\nCorrected in {count} iterations\n")
+            count += 1
+        sys.stdout.write(f"\nCorrected in {count} iterations \n")
     return U
     
 def initialize_phase(Nx, Ny, radius):
