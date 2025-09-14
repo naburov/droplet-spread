@@ -31,21 +31,34 @@ class DropletSimulator:
     
     def setup_solvers(self):
         """Setup numerical solvers."""
+        # Get solver parameters from config
+        pressure_config = self.config.solver_params.pressure_solver
+        correction_config = self.config.solver_params.correction_solver
+        bc = self.config.boundary_conditions
+        
         # Pressure solver
         self.pressure_solver = SparseSolverWrapper(
-            self.Nx, self.Ny, self.dx, self.dy, "pyamg",
-            {'accel': 'bicgstab', 'tol': 0.05}
+            self.Nx, self.Ny, self.dx, self.dy, pressure_config["backend"],
+            {
+                'accel': pressure_config["accel"], 
+                'tol': pressure_config["tol"],
+                'maxiter': pressure_config["maxiter"]
+            }
         )
-        self.pressure_solver.set_top_boundary_condition("dirichlet")
-        self.pressure_solver.set_bottom_boundary_condition("dirichlet")
-        self.pressure_solver.set_left_boundary_condition("dirichlet")
-        self.pressure_solver.set_right_boundary_condition("dirichlet")
+        self.pressure_solver.set_top_boundary_condition(bc.pressure["top"])
+        self.pressure_solver.set_bottom_boundary_condition(bc.pressure["bottom"])
+        self.pressure_solver.set_left_boundary_condition(bc.pressure["left"])
+        self.pressure_solver.set_right_boundary_condition(bc.pressure["right"])
         self.pressure_solver.create_sparse_matrix()
         
         # Velocity correction solver
         self.correction_solver = SparseSolverWrapper(
-            self.Nx, self.Ny, self.dx, self.dy, "pyamg",
-            {'accel': 'bicgstab', 'tol': 0.05}
+            self.Nx, self.Ny, self.dx, self.dy, correction_config["backend"],
+            {
+                'accel': correction_config["accel"], 
+                'tol': correction_config["tol"],
+                'maxiter': correction_config["maxiter"]
+            }
         )
         self.correction_solver.set_top_boundary_condition("neumann")
         self.correction_solver.set_bottom_boundary_condition("neumann")
@@ -130,8 +143,10 @@ class DropletSimulator:
         self.t += current_dt
         self.step += 1
     
-    def cfl_condition(self, C=0.01):
+    def cfl_condition(self, C=None):
         """Calculate CFL-limited time step."""
+        if C is None:
+            C = self.config.time.cfl_number
         u_max = np.max(np.abs(self.U[..., 0]))
         v_max = np.max(np.abs(self.U[..., 1]))
         return C / (u_max/self.dx + v_max/self.dy) if (u_max + v_max) > 0 else np.inf
@@ -266,16 +281,20 @@ class DropletSimulator:
         U = U.at[..., 1].set(U[..., 1] - dt * jax_dy(p_correction, h=dy))
         return U, p_correction
     
-    def _ppe(self, U, dx, dy, dt, correction_solver=None, div_threshold=0.05):
+    def _ppe(self, U, dx, dy, dt, correction_solver=None, div_threshold=None):
         """Pressure projection with divergence correction."""
-        max_div_threshold = 0.05
+        if div_threshold is None:
+            div_threshold = self.config.solver_params.divergence_threshold
+        max_div_threshold = div_threshold
+        max_iterations = self.config.solver_params.max_correction_iterations
+        
         U, solution = self._correction_step(U, dx, dy, dt, correction_solver=correction_solver)
         U = self._apply_velocity_boundary_conditions(U, 0.01, dy)
         
         divergence, max_div, mean_div = self._check_continuity(U, dx, dy)
         if mean_div > div_threshold:
             count = 0
-            while mean_div > div_threshold:
+            while mean_div > div_threshold and count < max_iterations:
                 U, solution = self._correction_step(U, dx, dy, dt, correction_solver=correction_solver, div=divergence/dt)
                 U = self._apply_velocity_boundary_conditions(U, 0.01, dy)
                 divergence, max_div, mean_div = self._check_continuity(U, dx, dy)
@@ -284,7 +303,10 @@ class DropletSimulator:
                 if max_div < max_div_threshold:
                     break
                 count += 1
-            print(f"\nCorrected in {count} iterations \n")
+            if count >= max_iterations:
+                print(f"\nMax iterations ({max_iterations}) reached")
+            else:
+                print(f"\nCorrected in {count} iterations \n")
         return U
     
     def run(self, output_dir: str = None):
@@ -314,9 +336,13 @@ class DropletSimulator:
         )
         mass = np.sum(self.phi[self.phi > 0])
         
+        # Use plotting parameters from config
+        plot_params = self.config.plotting_params
+        
         create_joint_plot(
             self.phi, self.U, self.P, surface_tension, 
             self.config.time.dt, self.step, self.dx, self.dy, 
             mass, p.rho1, p.rho2, self.t,
-            save_path=f'{output_dir}/joint_plot_step_{self.step}.png'
+            save_path=f'{output_dir}/joint_plot_step_{self.step}.png',
+            plotting_params=plot_params
         )
