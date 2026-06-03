@@ -1,0 +1,138 @@
+{
+  "description": "Static water droplet in room-temperature air on hydrophobic glass-like surface. Semi-implicit phase/velocity, staggered MAC, RK2 advection, AMG predictor.",
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1,
+    "Re1": 25.3,
+    "Re2": 380.5,
+    "We1": 0.01,
+    "We2": 0.01,
+    "Pe": 500,
+    "epsilon": 0.02,
+    "surface_tension": {
+      "use_composition_field": true,
+      "composition_force_scale": 1.0,
+      "weber_interpolation": "constant_liquid"
+    },
+    "contact_angle": 60,
+    "include_gravity": true,
+    "Fr": 1.36,
+    "g": -1,
+    "atm_pressure": 0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0
+  },
+  "grid_params": {
+    "Lx": 1,
+    "Ly": 1,
+    "Nx": 128,
+    "Ny": 128
+  },
+  "time_params": {
+    "dt": 1e-03,
+    "dt_initial": 1e-03,
+    "dt_max": 1.5e-04,
+    "t_max": 2,
+    "checkpoint_interval": 100,
+    "cfl_number": 0.1,
+    "capillary_cfl_number": 100.0,
+    "curvature_cfl_number": 100.0
+  },
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.1,
+    "droplet_center_x": 0.5,
+    "droplet_center_y": 0.0,
+    "is_bubble": false
+  },
+  "boundary_conditions": {
+    "pressure": {
+      "top": "open",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann",
+      "open_pressure": 0
+    },
+    "velocity": {
+      "top": "dirichlet",
+      "bottom": "navier_slip",
+      "slip_length": 0.001,
+      "navier_slip_phase_aware": true,
+      "slip_length_liquid": 0.001,
+      "slip_length_gas": 0.003,
+      "strip_compatibility_top": false,
+      "left": "slip_symmetry",
+      "right": "slip_symmetry",
+      "dirichlet_values": {
+        "top": {
+          "u": 0,
+          "v": 0
+        },
+        "left": {
+          "u": 0,
+          "v": 0
+        },
+        "right": {
+          "u": 0,
+          "v": 0
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": false,
+      "cox_voinov_coefficient": 1,
+      "cox_voinov_exponent": 0.333
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "impermeable",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1
+    }
+  },
+  "solver_params": {
+    "phase_update": "semi_implicit",
+    "velocity_predictor": "semi_implicit",
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.01,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.01,
+      "maxiter": 1000
+    },
+    "velocity_layout": "staggered",
+    "ppe": {
+      "mean_div_threshold": 0.01,
+      "max_div_threshold": 0.01,
+      "div_threshold": 0.01,
+      "max_iterations": 20,
+      "under_relaxation": 1,
+      "convergence_mode": "global"
+    },
+    "velocity_advection_scheme": "upwind_rk2",
+    "velocity_predictor_linear_solver": "amg"
+  },
+  "visualization": {
+    "use_pyvista": false
+  },
+  "restart": {
+    "restart_from": null
+  }
+}

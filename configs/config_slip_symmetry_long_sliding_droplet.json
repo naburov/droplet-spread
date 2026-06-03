@@ -1,0 +1,92 @@
+{
+  "description": "Slip symmetry, long run, sliding droplet. Based on experiment_20260208_182839: 64x64 staggered Cox-Voinov, navier_slip bottom; left/right slip_symmetry (no inlet), pressure_drop-driven sliding.",
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1,
+    "Re1": 500,
+    "Re2": 50,
+    "We1": 100,
+    "We2": 0.01,
+    "Pe": 500,
+    "epsilon": 0.02,
+    "alpha": 1,
+    "phase_penalty": 1000,
+    "contact_angle": 80,
+    "include_gravity": false,
+    "g": -1,
+    "atm_pressure": 0,
+    "Fr": 0.8,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {"smooth_curvature": false, "smoothing_radius": 1}
+  },
+  "grid_params": {"Lx": 1, "Ly": 1, "Nx": 64, "Ny": 64},
+  "time_params": {
+    "dt": 0.0005,
+    "t_max": 50,
+    "checkpoint_interval": 20,
+    "dt_initial": 0.00025,
+    "cfl_number": 0.3,
+    "capillary_cfl_number": 10,
+    "curvature_cfl_number": 10
+  },
+  "initial_conditions": {
+    "droplet_radius": 0.1,
+    "type": "droplet",
+    "droplet_center_x": 0.45,
+    "droplet_center_y": 0,
+    "pressure_drop": 0.02
+  },
+  "restart": {"restart_from": null},
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann",
+      "dirichlet_values": {},
+      "open_pressure": 0
+    },
+    "velocity": {
+      "top": "do_nothing",
+      "bottom": "navier_slip",
+      "slip_length": 2,
+      "left": "slip_symmetry",
+      "right": "slip_symmetry"
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 45,
+      "cox_voinov_exponent": 3
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1
+    }
+  },
+  "solver_params": {
+    "pressure_solver": {"backend": "pyamg", "accel": "bicgstab", "tol": 0.05, "maxiter": 500},
+    "correction_solver": {"backend": "pyamg", "accel": "bicgstab", "tol": 0.05, "maxiter": 500},
+    "velocity_layout": "staggered",
+    "ppe": {
+      "mean_div_threshold": 0.5,
+      "max_div_threshold": 0.1,
+      "max_iterations": 600,
+      "under_relaxation": 0.5
+    }
+  }
+}

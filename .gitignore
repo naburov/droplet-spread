@@ -1,0 +1,57 @@
+# OS/editor
+.DS_Store
+.vscode/
+
+# Python cache/build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+
+# Local environments
+.venv/
+venv/
+native/
+
+# Experiment and diagnostic output directories
+experiment_*/
+experiments/
+archive/
+compare_*_out*/
+compare_velocity_timing_*/
+ppe_diagnostics/
+
+# Data artifacts
+*.csv
+*.log
+*.npz
+simulation_parameters.json
+diagnostics/**/simulation_parameters.json
+diagnostics/**/summary.json
+diagnostics/**/ab_summary.json
+diagnostics/**/normal_direction_summary.json
+diagnostics/**/one_step_ab_summary.json
+
+# Images/plots/renders
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.svg
+
+# Videos/animations
+*.mp4
+*.mov
+*.avi
+*.webm
+*.mkv
+
+# LaTeX build outputs
+*.aux
+*.out
+*.pdf

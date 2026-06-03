@@ -1,0 +1,131 @@
+{
+  "description": "Falling droplet impact: gap=0.13, CA=60, regime=inertial.",
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 10.0,
+    "Re2": 200.0,
+    "We1": 0.001225,
+    "We2": 1.0,
+    "Pe": 20.0,
+    "epsilon": 0.04,
+    "contact_angle": 60,
+    "include_gravity": true,
+    "Fr": 0.35,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {
+      "smooth_curvature": false,
+      "smoothing_radius": 1
+    }
+  },
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.2,
+    "Nx": 128,
+    "Ny": 160
+  },
+  "time_params": {
+    "dt": 0.0005,
+    "dt_initial": 0.0002,
+    "t_max": 0.4,
+    "checkpoint_interval": 2500,
+    "cfl_number": 0.1,
+    "capillary_cfl_number": 0.1,
+    "curvature_cfl_number": 0.1
+  },
+  "initial_conditions": {
+    "droplet_radius": 0.12,
+    "droplet_center_x": 0.5,
+    "droplet_center_y": 0.25,
+    "is_bubble": false,
+    "initial_velocity": {
+      "u": 0.0,
+      "v": 0.0
+    },
+    "type": "droplet"
+  },
+  "boundary_conditions": {
+    "pressure": {
+      "top": "open",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann",
+      "open_pressure": 0.0
+    },
+    "velocity": {
+      "top": "do_nothing",
+      "bottom": "no_slip",
+      "left": "slip_symmetry",
+      "right": "slip_symmetry"
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "ghost_cell",
+      "use_cox_voinov": false,
+      "contact_angle_ghost_law": "analytic_gradient",
+      "contact_mask_soft_band": 0.8,
+      "contact_mask_grad_scale": 0.5,
+      "contact_angle_full_wall": true
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1.0
+    }
+  },
+  "solver_params": {
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "ppe": {
+      "mean_div_threshold": 0.15,
+      "max_div_threshold": 0.25,
+      "use_local_ppe": false,
+      "local_threshold_factor": 0.2,
+      "max_iterations": 1000,
+      "buffer_size": 5
+    },
+    "phase_field_solver": "ghost_cell",
+    "phase_update_mode": "semi_implicit_ch",
+    "phase_diffusion_solver_backend": "pyamg",
+    "phase_diffusion_solver_tol": 1e-08,
+    "phase_diffusion_solver_maxiter": 500,
+    "physical_pressure": {
+      "boundary_conditions": {
+        "top": "neumann",
+        "bottom": "neumann",
+        "left": "neumann",
+        "right": "neumann"
+      }
+    }
+  },
+  "restart": {
+    "restart_from": null
+  },
+  "visualization": {
+    "use_pyvista": false
+  }
+}

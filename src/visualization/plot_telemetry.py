@@ -223,15 +223,29 @@ def plot_statistics(statistics_file, output_dir, baseline_df=None):
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     
-    # Plot 12: Cumulative Time
+    # Plot 12: Contact-line force balance (fallback: cumulative time)
     ax = axes[3, 2]
-    ax.plot(df['step'], df['time'], label='Cumulative Time', color='blue', linewidth=2)
-    if baseline_aligned is not None and 'time_baseline' in baseline_aligned.columns:
-        ax.plot(df['step'], baseline_aligned['time_baseline'], 
-               label='Baseline', linestyle='--', alpha=0.6, linewidth=1.5, color='gray')
-    ax.set_xlabel('Step Number')
-    ax.set_ylabel('Cumulative Time')
-    ax.set_title('Cumulative Simulation Time')
+    if 'cl_sf_norm_mean' in df.columns:
+        ax.semilogy(df['time'], df['cl_sf_norm_mean'], label='|a_sf|', color='purple', linewidth=2)
+        ax.semilogy(df['time'], df['cl_pg_dyn_norm_mean'], label='|a_pg_dyn|', color='crimson', linewidth=2)
+        ax.semilogy(df['time'], df['cl_pg_hydro_norm_mean'], label='|a_pg_hydro|', color='royalblue', linewidth=1.8)
+        ax.semilogy(df['time'], df['cl_g_norm'], label='|a_g|', color='black', linewidth=1.5, linestyle='--')
+        if baseline_aligned is not None and 'cl_sf_norm_mean_baseline' in baseline_aligned.columns:
+            ax.semilogy(
+                df['time'], baseline_aligned['cl_sf_norm_mean_baseline'],
+                label='Baseline |a_sf|', linestyle=':', alpha=0.6, linewidth=1.3, color='gray'
+            )
+        ax.set_xlabel('Time')
+        ax.set_ylabel('Acceleration scale (log)')
+        ax.set_title('Contact-Line Force Balance')
+    else:
+        ax.plot(df['step'], df['time'], label='Cumulative Time', color='blue', linewidth=2)
+        if baseline_aligned is not None and 'time_baseline' in baseline_aligned.columns:
+            ax.plot(df['step'], baseline_aligned['time_baseline'], 
+                   label='Baseline', linestyle='--', alpha=0.6, linewidth=1.5, color='gray')
+        ax.set_xlabel('Step Number')
+        ax.set_ylabel('Cumulative Time')
+        ax.set_title('Cumulative Simulation Time')
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     

@@ -5,11 +5,11 @@ Implements the physics for two-phase (air-water) droplet spreading.
 """
 
 import numpy as np
+import jax.numpy as jnp
 
 from simulation.base import BaseSimulation
 from numerics.time_integration import cfl_dt, capillary_cfl_dt, curvature_cfl_dt
 from physics.surface_tension import jax_curvature_stats
-from solvers import ppe
 
 
 class TwoPhaseSimulation(BaseSimulation):
@@ -93,99 +93,51 @@ class TwoPhaseSimulation(BaseSimulation):
                 print(f"CFL-limited dt: {self.state.dt:.6e} ({limiting})")
     
     def _predictor_step(self):
-        """Predictor step: update velocity with surface tension and gravity."""
+        """Predictor step on staggered MAC faces."""
         surface_tension = self.state.compute_surface_tension()
-        velocity_layout = getattr(self.state, "velocity_layout", "collocated")
+        from solvers.staggered_velocity import staggered_predictor_step
 
-        if str(velocity_layout).lower() == "staggered":
-            # Staggered (MAC) predictor:
-            #  - keep (u_face, v_face) as the canonical velocity representation
-            #  - advance them with MAC operators
-            #  - map once per step back to collocated U for phase / diagnostics
-            from numerics.staggered_utils import to_staggered, to_collocated
-            from solvers.staggered_velocity import staggered_predictor_step
+        self.state.ensure_face_velocities()
 
-            # Lazily initialize MAC faces from collocated U on the first step
-            if getattr(self.state, "u_face", None) is None or getattr(self.state, "v_face", None) is None:
-                self.state.u_face, self.state.v_face = to_staggered(self.state.U)
+        u_face, v_face = staggered_predictor_step(
+            self.state.u_face,
+            self.state.v_face,
+            surface_tension,
+            self.state.dt,
+            self.state.dx,
+            self.state.dy,
+            self.state.fluid_solver.Re2,
+            self.state.fluid_solver.Fr,
+            self.state.fluid_solver.g,
+            include_gravity=self.state.include_gravity,
+            include_advection=True,
+            P=self.state.P,
+            phi=self.state.phi,
+            rho1=self.state.rho1,
+            rho2=self.state.rho2,
+            geometry=self.state.geometry,
+        )
 
-            # Predictor on faces (P, phi, rho, geometry for -grad P/rho so gravity drives sliding on tilt)
-            self.state.u_face, self.state.v_face = staggered_predictor_step(
-                self.state.u_face,
-                self.state.v_face,
-                surface_tension,
-                self.state.dt,
-                self.state.dx,
-                self.state.dy,
-                self.state.fluid_solver.Re2,
-                self.state.fluid_solver.Fr,
-                self.state.fluid_solver.g,
-                include_gravity=self.state.include_gravity,
-                include_advection=True,
-                P=self.state.P,
-                phi=self.state.phi,
-                rho1=self.state.rho1,
-                rho2=self.state.rho2,
-                geometry=self.state.geometry,
-            )
-
-            # Enforce BCs: with non-flat geometry use collocated (no-slip at surface in (x,y));
-            # otherwise use face BCs for consistency with PPE.
-            if getattr(self.state.geometry, "has_geometry", False):
-                self.state.U = to_collocated(self.state.u_face, self.state.v_face)
-                self.state.U = self._apply_velocity_bc()
-                self.state.u_face, self.state.v_face = to_staggered(self.state.U)
-            elif hasattr(self.state.velocity_bc, "apply_to_faces"):
-                self.state.u_face, self.state.v_face = self.state.velocity_bc.apply_to_faces(
-                    self.state.u_face, self.state.v_face,
-                    self.state.dx, self.state.dy,
-                    psi=self._get_psi_for_physics(), geometry=self.state.geometry, phi=self.state.phi
-                )
-            else:
-                self.state.U = to_collocated(self.state.u_face, self.state.v_face)
-                self.state.U = self._apply_velocity_bc()
-                self.state.u_face, self.state.v_face = to_staggered(self.state.U)
-            self.state.U = to_collocated(self.state.u_face, self.state.v_face)
-        else:
-            # Original collocated predictor (Rhie–Chow interpolation disabled)
-            self.state.U = self.state.fluid_solver.update_velocity(
-                self.state.U,
-                self.state.P,
-                surface_tension,
-                self.state.dt,
-                self.state.dx,
-                self.state.dy,
-                self.state.phi,
-                self.state.geometry,
-                include_gravity=self.state.include_gravity,
-                use_jax=True,
-                psi=self._get_psi_for_physics(),
-            )
-        
-        # Apply velocity boundary conditions (collocated view).
-        # For staggered layout, faces were already resynced from this U above.
-        if str(velocity_layout).lower() != "staggered":
-            self.state.U = self._apply_velocity_bc()
+        # Keep BC application in face space for MAC consistency.
+        u_face, v_face = self.state.velocity_bc.apply_to_faces(
+            u_face, v_face,
+            self.state.dx, self.state.dy,
+            psi=self._get_psi_for_physics(), geometry=self.state.geometry, phi=self.state.phi
+        )
+        self.state.set_face_velocities(u_face, v_face, sync_collocated=True)
     
     def _corrector_step(self):
-        """Corrector step: apply PPE to enforce incompressibility."""
-        velocity_layout = getattr(self.state, "velocity_layout", "collocated")
-        if str(velocity_layout).lower() == "staggered":
-            from numerics.staggered_utils import to_staggered
-            from numerics.staggered_mac import divergence as mac_divergence
-            # For staggered runs, use MAC divergence metrics so PPE criteria/logs are consistent.
-            if getattr(self.state, "u_face", None) is not None and getattr(self.state, "v_face", None) is not None:
-                u_face, v_face = self.state.u_face, self.state.v_face
-            else:
-                u_face, v_face = to_staggered(self.state.U)
-            div_face = np.array(mac_divergence(u_face, v_face, self.state.dx, self.state.dy))
-            max_div = float(np.max(np.abs(div_face)))
-            mean_div = float(np.mean(np.abs(div_face)))
-            divergence = div_face
-        else:
-            divergence, max_div, mean_div, *_ = self.state.fluid_solver.check_continuity(
-                self.state.U, self.state.dx, self.state.dy, self.state.geometry
-            )
+        """Corrector step: staggered PPE to enforce incompressibility."""
+        from solvers.ppe import _mac_divergence_geometry
+
+        self.state.ensure_face_velocities()
+        u_face, v_face = self.state.u_face, self.state.v_face
+        div_face = _mac_divergence_geometry(
+            u_face, v_face, self.state.dx, self.state.dy, self.state.geometry
+        )
+        abs_div = jnp.abs(div_face)
+        max_div = float(jnp.max(abs_div))
+        mean_div = float(jnp.mean(abs_div))
 
         # Initialize PPE info
         self._last_ppe_info = {
@@ -212,6 +164,7 @@ class TwoPhaseSimulation(BaseSimulation):
                 ppe_bcs = ppe_bcs_explicit
             
             max_iterations = ppe_settings.get('max_iterations', 1000)
+            min_iterations = ppe_settings.get('min_iterations', 1)
             under_relaxation = ppe_settings.get('under_relaxation', 1.0)
             convergence_mode = ppe_settings.get('convergence_mode', 'interior')
             # No crutches: checkerboard filter, Rhie–Chow disabled; under_relaxation optional
@@ -222,73 +175,54 @@ class TwoPhaseSimulation(BaseSimulation):
             else:
                 debug_output_dir = None
                 debug_step = None
-            if str(velocity_layout).lower() == "staggered":
-                from solvers.ppe import ppe_solve_staggered
-                from numerics.staggered_utils import to_staggered, to_collocated
-                self.state.U, self._last_ppe_info = ppe_solve_staggered(
-                    self.state.U,
-                    self.state.dx,
-                    self.state.dy,
-                    self.state.dt,
-                    self.state.geometry,
-                    self.state.correction_solver,
-                    velocity_bc_manager=self.state.velocity_bc,
-                    ppe_bcs=ppe_bcs,
-                    psi=self._get_psi_for_physics(),
-                    div_threshold=self.div_threshold,
-                    max_div_threshold=self.max_div_threshold,
-                    mean_div_threshold=self.mean_div_threshold,
-                    max_iterations=max_iterations,
-                    debug_output_dir=debug_output_dir,
-                    debug_step=debug_step,
-                    under_relaxation=under_relaxation,
-                    phi=self.state.phi,
-                    convergence_mode=convergence_mode,
+            from solvers.ppe import ppe_solve_staggered
+            self.state.U, self._last_ppe_info = ppe_solve_staggered(
+                self.state.U,
+                self.state.dx,
+                self.state.dy,
+                self.state.dt,
+                self.state.geometry,
+                self.state.correction_solver,
+                velocity_bc_manager=self.state.velocity_bc,
+                ppe_bcs=ppe_bcs,
+                psi=self._get_psi_for_physics(),
+                div_threshold=self.div_threshold,
+                max_div_threshold=self.max_div_threshold,
+                mean_div_threshold=self.mean_div_threshold,
+                min_iterations=min_iterations,
+                max_iterations=max_iterations,
+                debug_output_dir=debug_output_dir,
+                debug_step=debug_step,
+                under_relaxation=under_relaxation,
+                phi=self.state.phi,
+                rho1=self.state.rho1,
+                rho2=self.state.rho2,
+                convergence_mode=convergence_mode,
+                u_face_in=self.state.u_face,
+                v_face_in=self.state.v_face,
+            )
+            # Sync converged faces from staggered PPE output.
+            if (
+                isinstance(self._last_ppe_info, dict)
+                and "u_face_out" in self._last_ppe_info
+                and "v_face_out" in self._last_ppe_info
+            ):
+                self.state.set_face_velocities(
+                    self._last_ppe_info["u_face_out"],
+                    self._last_ppe_info["v_face_out"],
+                    sync_collocated=True,
                 )
-                # Sync faces from PPE result.
-                # NOTE: ppe_solve_staggered already re-applies face BCs each iteration and
-                # returns BC-consistent face fields. Reconstructing faces from collocated U
-                # can re-introduce divergence due interpolation.
-                if (
-                    isinstance(self._last_ppe_info, dict)
-                    and "u_face_out" in self._last_ppe_info
-                    and "v_face_out" in self._last_ppe_info
-                ):
-                    self.state.u_face = self._last_ppe_info["u_face_out"]
-                    self.state.v_face = self._last_ppe_info["v_face_out"]
-                else:
-                    self.state.u_face, self.state.v_face = to_staggered(self.state.U)
-            else:
-                self.state.U, self._last_ppe_info = ppe(
-                    self.state.U, self.state.dx, self.state.dy, self.state.dt,
-                    self.state.geometry,
-                    self.state.correction_solver,
-                    div_threshold=self.div_threshold,
-                    max_div_threshold=self.max_div_threshold,
-                    mean_div_threshold=self.mean_div_threshold,
-                    ppe_bcs=ppe_bcs,
-                    velocity_bc_manager=self.state.velocity_bc,
-                    max_iterations=max_iterations,
-                    psi=self._get_psi_for_physics(),
-                    debug_output_dir=debug_output_dir,
-                    debug_step=debug_step,
-                    under_relaxation=under_relaxation,
-                )
-            
-            # Apply velocity BCs after PPE (collocated path only; staggered already synced faces above).
-            if str(velocity_layout).lower() != "staggered" or not hasattr(self.state.velocity_bc, "apply_to_faces"):
-                self.state.U = self._apply_velocity_bc()
-            
-            if str(velocity_layout).lower() == "staggered":
-                from numerics.staggered_mac import divergence as mac_divergence
-                div_face = np.array(mac_divergence(self.state.u_face, self.state.v_face, self.state.dx, self.state.dy))
-                max_div = float(np.max(np.abs(div_face)))
-                mean_div = float(np.mean(np.abs(div_face)))
-                divergence = div_face
-            else:
-                divergence, max_div, mean_div, *_ = self.state.fluid_solver.check_continuity(
-                    self.state.U, self.state.dx, self.state.dy, self.state.geometry
-                )
+
+            div_face = _mac_divergence_geometry(
+                self.state.u_face,
+                self.state.v_face,
+                self.state.dx,
+                self.state.dy,
+                self.state.geometry,
+            )
+            abs_div = jnp.abs(div_face)
+            max_div = float(jnp.max(abs_div))
+            mean_div = float(jnp.mean(abs_div))
             self._last_ppe_info['div_after_max'] = float(max_div)
             self._last_ppe_info['div_after_mean'] = float(mean_div)
         
@@ -356,11 +290,19 @@ class TwoPhaseSimulation(BaseSimulation):
                 pressure_offset = max(dirichlet_offsets)  # Use max to ensure all BCs satisfied
                 self.state.P = self.state.P + pressure_offset
         
-        # Apply pressure boundary conditions after offset
-        # This ensures Dirichlet BCs are exactly enforced (overwrites any drift)
-        self.state.P = self.state.pressure_bc.apply(
-            self.state.P, self.state.dx, self.state.dy
-        )
+        # Re-apply only Dirichlet pressure boundaries.
+        # Do NOT re-apply Neumann copy on total pressure here:
+        # that can corrupt dynamic-pressure consistency near the wall
+        # after the variable-coefficient capillary solve.
+        for boundary in ["top", "bottom", "left", "right"]:
+            if self.state.pressure_bc.bc_types.get(boundary) != BCType.DIRICHLET:
+                continue
+            target_value = self.state.pressure_bc.dirichlet_values.get(
+                boundary, self.state.pressure_bc.open_pressure
+            )
+            self.state.P = self.state.pressure_bc._dirichlet(
+                self.state.P, boundary, float(target_value)
+            )
         self.state.invalidate_cache()
     
     # ==================== Hook Methods for Subclasses ====================

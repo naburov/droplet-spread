@@ -1,0 +1,545 @@
+\documentclass[12pt]{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\geometry{margin=1in}
+
+\title{Mathematical Model: Three-Phase Droplet Spreading\\With Ice-Water Phase Transition}
+\author{From Code Analysis}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+This document extends the two-phase model to include ice-water phase transition. The model now tracks three phases: air, water (liquid), and ice (solid), using two phase fields: $\phi$ for liquid-gas interface and $\psi$ for water-ice interface.
+
+\section{Problem Domain}
+
+Same as two-phase model: $\Omega = [0, L_x] \times [0, L_y]$ with:
+\begin{itemize}
+    \item Bottom boundary ($y = 0$): Solid wall (substrate)
+    \item Top boundary ($y = L_y$): Open atmosphere
+    \item Left boundary ($x = 0$): Symmetry or open
+    \item Right boundary ($x = L_x$): Symmetry or open
+\end{itemize}
+
+\section{Phase Field Variables}
+
+\subsection{Liquid-Gas Phase Field ($\phi$)}
+
+\begin{itemize}
+    \item $\phi = -1$: Liquid phase (water)
+    \item $\phi = +1$: Gas phase (air)
+\end{itemize}
+
+\subsection{Water-Ice Phase Field ($\psi$)}
+
+\begin{itemize}
+    \item $\psi = -1$: Water (liquid)
+    \item $\psi = +1$: Ice (solid)
+\end{itemize}
+
+\textbf{Important Constraint:} Ice can only form in water regions. In air regions ($\phi > 0$), $\psi$ is forced to $-1$ (water state, which is the default for air).
+
+\section{Governing Equations}
+
+\subsection{Phase Field Equation for Liquid-Gas Interface ($\phi$)}
+
+The equation remains the same as in the two-phase model:
+\begin{equation}
+\frac{\partial \phi}{\partial t} + \mathbf{u} \cdot \nabla \phi = -\frac{1}{\text{Pe}} \left( \mu_c - \langle \mu_c \rangle \right)
+\label{eq:phase_field_three}
+\end{equation}
+
+where the chemical potential is:
+\begin{equation}
+\mu_c = f'(\phi) - \varepsilon^2 \nabla^2 \phi
+\label{eq:chemical_potential_three}
+\end{equation}
+
+with $f(\phi) = \frac{1}{4}(\phi^2 - 1)^2$ and $f'(\phi) = \phi(\phi^2 - 1)$.
+
+\subsection{Ice Phase Field Equation ($\psi$)}
+
+The ice phase field can be solved using either Allen-Cahn or Cahn-Hilliard equation.
+
+\subsubsection{Allen-Cahn Equation (Non-Conservative)}
+
+\begin{equation}
+\frac{\partial \psi}{\partial t} = -M_\psi \left[ f'(\psi) - \varepsilon_\psi^2 \nabla^2 \psi \right] - A(\psi) \mathbf{u} \cdot \nabla \psi + \lambda (T_m - T)
+\label{eq:ice_allen_cahn}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $M_\psi$: Mobility coefficient
+    \item $\varepsilon_\psi$: Interface thickness parameter for ice-water interface
+    \item $f(\psi) = \frac{1}{4}(\psi^2 - 1)^2$: Double-well potential
+    \item $f'(\psi) = \psi(\psi^2 - 1)$: Derivative of double-well potential
+    \item $A(\psi) = 0.5(1 - \tanh(\psi/0.1))$: Advection mask (0 in ice, 1 in water)
+    \item $\lambda = M_\psi / (\varepsilon_\psi \cdot \Delta T)$: Temperature coupling coefficient
+    \item $T_m$: Melting temperature
+    \item $T$: Temperature field
+    \item $\Delta T$: Temperature transition width
+\end{itemize}
+
+\subsubsection{Cahn-Hilliard Equation (Conservative)}
+
+\begin{equation}
+\frac{\partial \psi}{\partial t} + A(\psi) \mathbf{u} \cdot \nabla \psi = -\frac{1}{\text{Pe}_\psi} \left( \mu_\psi - \langle \mu_\psi \rangle + \mu_T \right)
+\label{eq:ice_cahn_hilliard}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\text{Pe}_\psi$: Péclet number for ice phase field
+    \item $\mu_\psi = f'(\psi) - \varepsilon_\psi^2 \nabla^2 \psi$: Phase field chemical potential
+    \item $\mu_T = -\lambda (T_m - T)$: Temperature coupling term
+    \item $\langle \mu_\psi \rangle$: Spatial average (Lagrange multiplier for mass conservation)
+\end{itemize}
+
+The advection mask $A(\psi)$ ensures ice (solid) is not advected by fluid flow:
+\begin{equation}
+A(\psi) = \begin{cases}
+1 & \text{if } \psi < 0 \text{ (water, advection allowed)} \\
+0 & \text{if } \psi > 0 \text{ (ice, no advection)}
+\end{cases}
+\end{equation}
+
+In practice, a smooth transition is used:
+\begin{equation}
+A(\psi) = 0.5 \left( 1 - \tanh\left(\frac{\psi}{0.1}\right) \right)
+\label{eq:advection_mask}
+\end{equation}
+
+\subsection{Temperature Equation}
+
+The temperature field evolves according to the heat equation with latent heat coupling:
+\begin{equation}
+\frac{\partial T}{\partial t} = -A(\psi) \mathbf{u} \cdot \nabla T + \nabla \cdot (\alpha \nabla T) + \frac{L}{2c_p} \frac{\partial \psi}{\partial t}
+\label{eq:temperature}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\alpha(\psi)$: Thermal diffusivity (phase-dependent)
+    \item $L$: Latent heat of fusion
+    \item $c_p(\psi)$: Specific heat capacity (phase-dependent)
+    \item $A(\psi)$: Same advection mask as in ice phase field equation
+\end{itemize}
+
+The thermal diffusivity and specific heat are interpolated between water and ice:
+\begin{align}
+\alpha(\psi) &= \alpha_w (1 - \psi_m) + \alpha_i \psi_m \\
+c_p(\psi) &= c_{p,w} (1 - \psi_m) + c_{p,i} \psi_m
+\end{align}
+
+where $\psi_m = (\psi + 1)/2$ maps $\psi \in [-1, 1]$ to $[0, 1]$, and:
+\begin{itemize}
+    \item $\alpha_w$: Thermal diffusivity of water
+    \item $\alpha_i$: Thermal diffusivity of ice
+    \item $c_{p,w}$: Specific heat of water
+    \item $c_{p,i}$: Specific heat of ice
+\end{itemize}
+
+The diffusion term is computed as:
+\begin{equation}
+\nabla \cdot (\alpha \nabla T) = \alpha \nabla^2 T + \nabla \alpha \cdot \nabla T
+\label{eq:diffusion_full}
+\end{equation}
+
+\subsection{Modified Navier-Stokes Equations}
+
+\subsubsection{Continuity Equation}
+
+\begin{equation}
+\nabla \cdot \mathbf{u} = 0
+\label{eq:continuity_three}
+\end{equation}
+
+\subsubsection{Momentum Equation}
+
+The momentum equation is modified to account for ice as a solid boundary:
+
+\textbf{Predictor Step:}
+\begin{equation}
+\tilde{\mathbf{u}} = \mathbf{u}^n + \Delta t \left[ -(\mathbf{u} \cdot \nabla)\mathbf{u} + \frac{1}{\text{Re}} \nabla^2 \mathbf{u} - \frac{1}{\rho} \nabla p - \frac{1}{\rho} \mathbf{F}_{st} + \frac{1}{\text{Fr}} \mathbf{g} \right]^n
+\label{eq:momentum_predictor_three}
+\end{equation}
+
+\textbf{Critical Constraint:} In ice regions ($\psi > 0$), velocity is set to zero:
+\begin{equation}
+\mathbf{u}(\mathbf{x}, t) = \mathbf{0} \quad \text{if } \psi(\mathbf{x}, t) > 0
+\label{eq:ice_velocity_constraint}
+\end{equation}
+
+This ensures ice acts as a solid boundary. The velocity masking is applied:
+\begin{enumerate}
+    \item Before calculating velocity terms (convective, viscous, etc.)
+    \item After the predictor step
+    \item After the corrector step
+    \item After applying boundary conditions
+\end{enumerate}
+
+\subsection{Surface Tension Force}
+
+The surface tension force calculation remains the same as in the two-phase model:
+\begin{equation}
+\mathbf{F}_{st} = \frac{3\sqrt{2}\varepsilon}{4\text{We}} \kappa |\nabla \phi| \nabla \phi
+\label{eq:surface_tension_three}
+\end{equation}
+
+However, the contact angle at the bottom boundary may be modified based on ice presence (ice-aware contact angle).
+
+\subsection{Pressure Equation}
+
+Same as two-phase model:
+\begin{equation}
+\nabla^2 p = \nabla \cdot \mathbf{F}_{st} - \rho g
+\label{eq:pressure_equation_three}
+\end{equation}
+
+\subsection{Material Properties}
+
+\subsubsection{Density (Three-Phase)}
+
+Density now depends on both $\phi$ and $\psi$:
+\begin{equation}
+\rho(\phi, \psi) = \left[ \frac{1 - \phi_m}{\rho_{\text{liquid}}(\psi)} + \frac{\phi_m}{\rho_{\text{air}}} \right]^{-1}
+\label{eq:density_three}
+\end{equation}
+
+where:
+\begin{equation}
+\rho_{\text{liquid}}(\psi) = \rho_w (1 - \psi_m) + \rho_i \psi_m
+\end{equation}
+
+and:
+\begin{itemize}
+    \item $\phi_m = (\phi + 1)/2$: Maps $\phi \in [-1, 1]$ to $[0, 1]$
+    \item $\psi_m = (\psi + 1)/2$: Maps $\psi \in [-1, 1]$ to $[0, 1]$
+    \item $\rho_w$: Density of water
+    \item $\rho_i$: Density of ice
+    \item $\rho_{\text{air}}$: Density of air
+\end{itemize}
+
+\section{Boundary Conditions}
+
+\subsection{Phase Field ($\phi$) Boundary Conditions}
+
+Same as two-phase model, but with ice-aware contact angle option:
+
+\subsubsection{Bottom Boundary ($y = 0$): Contact Angle (Ice-Aware)}
+
+The contact angle may depend on ice presence:
+\begin{equation}
+\frac{\partial \phi}{\partial n} = -\cos(\theta(\psi)) |\nabla \phi|
+\label{eq:contact_angle_ice_aware}
+\end{equation}
+
+where $\theta(\psi)$ is the contact angle, which may be different in ice regions:
+\begin{equation}
+\theta(\psi) = \begin{cases}
+\theta_{\text{ice}} & \text{if } \psi > 0 \text{ (ice present)} \\
+\theta_{\text{water}} & \text{if } \psi < 0 \text{ (water)}
+\end{cases}
+\end{equation}
+
+\subsubsection{Other Boundaries: Neumann}
+
+Same as two-phase model.
+
+\subsection{Ice Phase Field ($\psi$) Boundary Conditions}
+
+\subsubsection{All Boundaries: Neumann (Zero Gradient)}
+
+\begin{equation}
+\frac{\partial \psi}{\partial n} = 0
+\label{eq:ice_neumann}
+\end{equation}
+
+In discrete form:
+\begin{align}
+\psi_{i,N_y-1} &= \psi_{i,N_y-2} \quad \text{(top)} \\
+\psi_{i,0} &= \psi_{i,1} \quad \text{(bottom)} \\
+\psi_{0,j} &= \psi_{1,j} \quad \text{(left)} \\
+\psi_{N_x-1,j} &= \psi_{N_x-2,j} \quad \text{(right)}
+\end{align}
+
+\subsubsection{Optional: Temperature-Based Dirichlet}
+
+If temperature is fixed at a boundary, the phase field may be set based on temperature:
+\begin{equation}
+\psi = \begin{cases}
++1 & \text{if } T < T_m \text{ (ice)} \\
+-1 & \text{if } T > T_m \text{ (water)}
+\end{cases}
+\label{eq:ice_temperature_bc}
+\end{equation}
+
+However, in practice, Neumann conditions are preferred to allow natural phase evolution driven by temperature coupling.
+
+\subsubsection{Ice Phase Field Bounds}
+
+The ice phase field is clipped to physical bounds:
+\begin{equation}
+\psi \in [-1, 1]
+\label{eq:ice_bounds}
+\end{equation}
+
+\subsubsection{Air Region Constraint}
+
+In air regions ($\phi > 0$), ice cannot form:
+\begin{equation}
+\psi = -1 \quad \text{if } \phi > 0
+\label{eq:ice_air_constraint}
+\end{equation}
+
+\subsection{Temperature ($T$) Boundary Conditions}
+
+\subsubsection{Bottom Boundary ($y = 0$): Dirichlet}
+
+\begin{equation}
+T = T_{\text{bottom}}
+\label{eq:temperature_bottom}
+\end{equation}
+
+Typically $T_{\text{bottom}} < T_m$ to promote freezing.
+
+\subsubsection{Top Boundary ($y = L_y$): Dirichlet or Neumann}
+
+\textbf{Dirichlet:}
+\begin{equation}
+T = T_{\text{top}}
+\label{eq:temperature_top_dirichlet}
+\end{equation}
+
+\textbf{Neumann (Adiabatic):}
+\begin{equation}
+\frac{\partial T}{\partial y} = 0
+\label{eq:temperature_top_neumann}
+\end{equation}
+
+\subsubsection{Left/Right Boundaries: Neumann}
+
+\begin{equation}
+\frac{\partial T}{\partial x} = 0
+\label{eq:temperature_sides}
+\end{equation}
+
+\subsubsection{Temperature Bounds}
+
+Temperature is clipped to a reasonable physical range:
+\begin{equation}
+T \in [200, 400] \text{ K}
+\label{eq:temperature_bounds}
+\end{equation}
+
+\subsection{Velocity ($\mathbf{u}$) Boundary Conditions}
+
+Same as two-phase model, with additional constraint:
+
+\subsubsection{Ice Regions: No-Slip (Solid Boundary)}
+
+\begin{equation}
+\mathbf{u} = \mathbf{0} \quad \text{if } \psi > 0
+\label{eq:velocity_ice}
+\end{equation}
+
+This is applied everywhere in the domain, not just at boundaries.
+
+\subsubsection{Boundary Conditions}
+
+Same as two-phase model:
+\begin{itemize}
+    \item Bottom: No-slip ($\mathbf{u} = \mathbf{0}$)
+    \item Top: Do-nothing ($\partial_n \mathbf{u} = 0$)
+    \item Left/Right: Slip symmetry or do-nothing
+\end{itemize}
+
+\subsection{Pressure ($p$) Boundary Conditions}
+
+Same as two-phase model.
+
+\section{Coupling Terms}
+
+\subsection{Temperature-Ice Coupling}
+
+The temperature drives ice formation/melting through the coupling term in the ice phase field equation:
+\begin{equation}
+\text{Coupling} = \lambda (T_m - T)
+\label{eq:temperature_coupling}
+\end{equation}
+
+\begin{itemize}
+    \item When $T < T_m$: $(T_m - T) > 0$ → drives $\psi$ toward $+1$ (freezing)
+    \item When $T > T_m$: $(T_m - T) < 0$ → drives $\psi$ toward $-1$ (melting)
+\end{itemize}
+
+\subsection{Latent Heat Coupling}
+
+Phase change releases/absorbs latent heat:
+\begin{equation}
+\text{Latent Heat} = \frac{L}{2c_p} \frac{\partial \psi}{\partial t}
+\label{eq:latent_heat}
+\end{equation}
+
+\begin{itemize}
+    \item When freezing ($\partial \psi / \partial t > 0$): Heat is released → temperature increases
+    \item When melting ($\partial \psi / \partial t < 0$): Heat is absorbed → temperature decreases
+\end{itemize}
+
+This creates a feedback loop:
+\begin{enumerate}
+    \item Low temperature → freezing → latent heat release → temperature increase
+    \item High temperature → melting → latent heat absorption → temperature decrease
+\end{enumerate}
+
+\section{Time Integration}
+
+The time integration follows the same projection method as the two-phase model, with additional steps:
+
+\begin{enumerate}
+    \item \textbf{Update Velocity (Predictor):} 
+    \begin{equation}
+    \tilde{\mathbf{u}} = \mathbf{u}^n + \Delta t \mathbf{RHS}^n
+    \end{equation}
+    Apply ice mask: $\tilde{\mathbf{u}} = 0$ where $\psi > 0$
+    
+    \item \textbf{Apply Velocity BCs}
+    
+    \item \textbf{Check Continuity and Apply PPE (if needed)}
+    
+    \item \textbf{Update Phase Field ($\phi$):} Solve Cahn-Hilliard equation
+    
+    \item \textbf{Update Ice Phase Field ($\psi$):} Solve Allen-Cahn or Cahn-Hilliard equation
+    \begin{itemize}
+        \item Apply constraint: $\psi = -1$ in air regions ($\phi > 0$)
+    \end{itemize}
+    
+    \item \textbf{Re-apply Phase Field BC with Ice-Aware Contact Angle}
+    
+    \item \textbf{Update Temperature:} Solve heat equation with latent heat
+    \begin{equation}
+    T^{n+1} = T^n + \Delta t \left[ -A(\psi) \mathbf{u} \cdot \nabla T + \nabla \cdot (\alpha \nabla T) + \frac{L}{2c_p} \frac{\psi^{n+1} - \psi^n}{\Delta t} \right]
+    \end{equation}
+    
+    \item \textbf{Update Pressure}
+\end{enumerate}
+
+\section{Initial Conditions}
+
+\subsection{Phase Field ($\phi$) Initialization}
+
+Same as two-phase model:
+\begin{equation}
+\phi(\mathbf{x}, 0) = \tanh\left( \frac{R - |\mathbf{x} - \mathbf{x}_c|}{\sqrt{2}\varepsilon} \right)
+\label{eq:initial_phase_three}
+\end{equation}
+
+\subsection{Ice Phase Field ($\psi$) Initialization}
+
+Typically initialized as all water:
+\begin{equation}
+\psi(\mathbf{x}, 0) = -1
+\label{eq:initial_ice}
+\end{equation}
+
+Or with initial ice region:
+\begin{equation}
+\psi(\mathbf{x}, 0) = \begin{cases}
++1 & \text{if } |\mathbf{x} - \mathbf{x}_{\text{ice}}| < R_{\text{ice}} \\
+-1 & \text{otherwise}
+\end{cases}
+\label{eq:initial_ice_region}
+\end{equation}
+
+\subsection{Temperature ($T$) Initialization}
+
+\begin{equation}
+T(\mathbf{x}, 0) = T_0
+\label{eq:initial_temperature}
+\end{equation}
+
+Typically $T_0$ is set below $T_m$ to promote freezing, or above $T_m$ to prevent freezing.
+
+\subsection{Velocity and Pressure Initialization}
+
+Same as two-phase model:
+\begin{align}
+\mathbf{u}(\mathbf{x}, 0) &= \mathbf{0} \\
+p(\mathbf{x}, 0) &= p_{\text{atm}}
+\end{align}
+
+\section{Summary of Variables and Boundary Conditions}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Variable} & \textbf{Boundary} & \textbf{Condition} \\
+\hline
+\multirow{4}{*}{$\phi$} & Bottom & Contact angle (ice-aware): $\partial_n \phi = -\cos(\theta(\psi))|\nabla \phi|$ \\
+ & Top & Neumann: $\partial_n \phi = 0$ \\
+ & Left & Neumann: $\partial_n \phi = 0$ \\
+ & Right & Neumann: $\partial_n \phi = 0$ \\
+\hline
+\multirow{4}{*}{$\psi$} & All & Neumann: $\partial_n \psi = 0$ \\
+ & Domain & Constraint: $\psi = -1$ if $\phi > 0$ (air) \\
+\hline
+\multirow{4}{*}{$T$} & Bottom & Dirichlet: $T = T_{\text{bottom}}$ \\
+ & Top & Dirichlet/Neumann: $T = T_{\text{top}}$ or $\partial_n T = 0$ \\
+ & Left & Neumann: $\partial_n T = 0$ \\
+ & Right & Neumann: $\partial_n T = 0$ \\
+\hline
+\multirow{4}{*}{$\mathbf{u}$} & Domain & Ice constraint: $\mathbf{u} = \mathbf{0}$ if $\psi > 0$ \\
+ & Bottom & No-slip: $\mathbf{u} = \mathbf{0}$ \\
+ & Top & Do-nothing: $\partial_n \mathbf{u} = 0$ \\
+ & Left/Right & Slip/Do-nothing \\
+\hline
+\multirow{4}{*}{$p$} & Bottom & Neumann: $\partial_n p = 0$ \\
+ & Top & Dirichlet: $p = p_{\text{atm}}$ \\
+ & Left/Right & Neumann: $\partial_n p = 0$ \\
+\hline
+\end{tabular}
+\caption{Summary of boundary conditions for all variables (three-phase model)}
+\label{tab:boundary_conditions_three}
+\end{table}
+
+\section{Additional Dimensionless Parameters}
+
+\begin{itemize}
+    \item \textbf{Ice Mobility ($M_\psi$):} Controls rate of ice-water phase transition (Allen-Cahn)
+    \item \textbf{Ice Péclet Number ($\text{Pe}_\psi$):} Controls interface mobility in Cahn-Hilliard formulation
+    \item \textbf{Ice Interface Thickness ($\varepsilon_\psi$):} Controls width of ice-water interface
+    \item \textbf{Melting Temperature ($T_m$):} Temperature at which ice and water coexist
+    \item \textbf{Thermal Diffusivities ($\alpha_w$, $\alpha_i$):} Control heat diffusion in water and ice
+    \item \textbf{Latent Heat ($L$):} Energy released/absorbed during phase change
+    \item \textbf{Specific Heats ($c_{p,w}$, $c_{p,i}$):} Heat capacity of water and ice
+    \item \textbf{Transition Width ($\Delta T$):} Temperature range over which phase transition occurs
+    \item \textbf{Ice-Aware Contact Angle ($\theta_{\text{ice}}$):} Contact angle when ice is present at wall
+\end{itemize}
+
+\section{Key Differences from Two-Phase Model}
+
+\begin{enumerate}
+    \item \textbf{Additional Phase Field:} Ice phase field $\psi$ tracks water-ice interface
+    \item \textbf{Temperature Field:} Temperature $T$ drives phase transition and is affected by latent heat
+    \item \textbf{Velocity Constraint:} Velocity is zero in ice regions ($\psi > 0$)
+    \item \textbf{Advection Masking:} Ice is not advected by fluid flow ($A(\psi) = 0$ in ice)
+    \item \textbf{Air Constraint:} Ice cannot form in air regions ($\psi = -1$ if $\phi > 0$)
+    \item \textbf{Coupling Terms:} Temperature-ice coupling and latent heat coupling
+    \item \textbf{Ice-Aware Contact Angle:} Contact angle may depend on ice presence
+    \item \textbf{Three-Phase Density:} Density depends on both $\phi$ and $\psi$
+\end{enumerate}
+
+\end{document}
+
+

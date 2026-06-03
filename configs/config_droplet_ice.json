@@ -1,0 +1,162 @@
+{
+    "description": "Realistic water droplet freezing on cold surface",
+    
+    "physical_params": {
+        "rho1": 0.001225,
+        "rho2": 1.0,
+        "Re1": 20.0,
+        "Re2": 300.0,
+        "We1": 7.6e-06,
+        "We2": 0.006,
+        "Pe": 10.0,
+        "epsilon": 0.02,
+        "contact_angle": 60,
+        "include_gravity": true,
+        "Fr": 0.001,
+        "g": -1.0,
+        "atm_pressure": 0.0,
+        "include_ice_water_transition": true,
+        "lambda_willmore": 0,
+        "epsilon_willmore": 0
+    },
+    
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.0,
+        "Nx": 128,
+        "Ny": 128
+    },
+    
+    "time_params": {
+        "dt": 0.0005,
+        "dt_initial": 0.00025,
+        "t_max": 2.0,
+        "checkpoint_interval": 50,
+        "cfl_number": 0.02,
+        "capillary_cfl_number": 0.01
+    },
+    
+    "initial_conditions": {
+        "droplet_radius": 0.2,
+        "ice_phase": {
+            "initial_state": "all_water",
+            "psi_initial": -1.0
+        },
+        "temperature": {
+            "initial_distribution": "linear",
+            "T_initial": 293.15,
+            "T_gradient": {
+                "T_bottom": 253.15,
+                "T_top": 293.15
+            }
+        }
+    },
+    
+    "ice_water_params": {
+        "T_melt": 273.15,
+        "T_ambient": 293.15,
+        "T_substrate": 253.15,
+        "M_psi": 10.0,
+        "epsilon_psi": 0.02,
+        "Pe_psi": 1.0,
+        "L": 334000.0,
+        "c_p_water": 4186.0,
+        "c_p_ice": 2100.0,
+        "alpha_water": 1.4e-7,
+        "alpha_ice": 1.1e-6,
+        "k_water": 0.6,
+        "k_ice": 2.2,
+        "rho_ice": 917.0,
+        "mu_ice": 1e6,
+        "contact_angle_ice": 70.0,
+        "include_latent_heat": true,
+        "include_volume_change": true,
+        "beta_volume": 0.09,
+        "penalization_strength": 1e8
+    },
+    
+    "boundary_conditions": {
+        "pressure": {
+            "top": "open",
+            "bottom": "neumann",
+            "left": "neumann",
+            "right": "neumann",
+            "open_pressure": 0.0
+        },
+        "velocity": {
+            "top": "do_nothing",
+            "bottom": "no_slip",
+            "left": "slip_symmetry",
+            "right": "slip_symmetry"
+        },
+        "phase_field": {
+            "top": "neumann",
+            "bottom": "contact_angle",
+            "left": "neumann",
+            "right": "neumann",
+            "contact_angle_method": "robin"
+        },
+        "chemical_potential": {
+            "top": "zero_flux",
+            "bottom": "zero_flux",
+            "left": "zero_flux",
+            "right": "zero_flux"
+        },
+        "advection": {
+            "top": "open",
+            "bottom": "impermeable",
+            "left": "impermeable",
+            "right": "impermeable",
+            "cout": 1.0
+        },
+        "ice_phase_field": {
+            "top": "neumann",
+            "bottom": "neumann",
+            "left": "neumann",
+            "right": "neumann",
+            "fixed_temperature_bc": true
+        },
+        "temperature": {
+            "top": "dirichlet",
+            "bottom": "dirichlet",
+            "left": "neumann",
+            "right": "neumann",
+            "dirichlet_values": {
+                "top": 293.15,
+                "bottom": 253.15
+            }
+        }
+    },
+    
+    "solver_params": {
+        "pressure_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.05,
+            "maxiter": 15000
+        },
+        "correction_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.05,
+            "maxiter": 15000
+        },
+        "ppe": {
+            "mean_div_threshold": 0.015,
+            "max_div_threshold": 0.015,
+            "use_local_ppe": true,
+            "local_threshold_factor": 0.1,
+            "buffer_size": 5,
+            "boundary_conditions": {
+                "top": "neumann",
+                "bottom": "neumann",
+                "left": "neumann",
+                "right": "neumann"
+            }
+        }
+    },
+    
+    "restart": {
+        "restart_from": null
+    }
+}

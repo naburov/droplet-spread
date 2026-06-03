@@ -14,7 +14,7 @@ from pathlib import Path
 class TelemetryLogger:
     """Logger for simulation telemetry data."""
     
-    def __init__(self, output_dir, include_ice_water=False, config=None):
+    def __init__(self, output_dir, include_ice_water=False, config=None, append=False):
         """Initialize telemetry logger.
         
         Args:
@@ -26,6 +26,7 @@ class TelemetryLogger:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.include_ice_water = include_ice_water
         self.config = config
+        self.append = append
         
         # CSV file paths
         self.stats_file = self.output_dir / "statistics.csv"
@@ -57,7 +58,16 @@ class TelemetryLogger:
             'curvature_max', 'curvature_mean',
             'droplet_mass',
             'droplet_start', 'droplet_end', 'droplet_bottom', 'droplet_top',
-            'divergence_max', 'divergence_mean'
+            'divergence_max', 'divergence_mean',
+            'contact_left_index', 'contact_right_index',
+            'cl_sf_norm_mean', 'cl_pg_norm_mean', 'cl_pg_dyn_norm_mean', 'cl_pg_hydro_norm_mean',
+            'cl_g_norm', 'cl_sf_to_g_ratio', 'cl_sf_to_pg_dyn_ratio',
+            'cl_sf_ax_mean_abs', 'cl_pg_dyn_ax_mean_abs',
+            'cl_sf_to_pg_dyn_ratio_xabs',
+            'cl_sf_n_mean', 'cl_pg_dyn_n_mean', 'cl_pg_h_n_mean', 'cl_g_n_mean', 'cl_res_n_mean',
+            'cl_sf_t_mean', 'cl_pg_dyn_t_mean', 'cl_pg_h_t_mean', 'cl_g_t_mean', 'cl_res_t_mean',
+            'cl_sf_norm_mean_liquid', 'cl_sf_norm_mean_gas',
+            'cl_pg_dyn_norm_mean_liquid', 'cl_pg_dyn_norm_mean_gas'
         ]
         
         # Add geometry statistics
@@ -75,6 +85,8 @@ class TelemetryLogger:
                 'T_below_melt', 'T_above_melt'
             ])
         
+        if self.append and self.stats_file.exists() and self.stats_file.stat().st_size > 0:
+            return
         with open(self.stats_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
@@ -97,6 +109,8 @@ class TelemetryLogger:
                 for stat in stats:
                     headers.append(f'{field}_{boundary}_{stat}')
         
+        if self.append and self.boundary_stats_file.exists() and self.boundary_stats_file.stat().st_size > 0:
+            return
         with open(self.boundary_stats_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
@@ -110,6 +124,8 @@ class TelemetryLogger:
             'divergence_after_max', 'divergence_after_mean',
             'divergence_threshold', 'max_div_threshold', 'mean_div_threshold'
         ]
+        if self.append and self.ppe_file.exists() and self.ppe_file.stat().st_size > 0:
+            return
         with open(self.ppe_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
@@ -134,6 +150,8 @@ class TelemetryLogger:
             'max_temperature_coupling', 'mean_temperature_coupling',
             'subcooled_water_fraction', 'superheated_ice_fraction'
         ]
+        if self.append and self.ice_transition_file.exists() and self.ice_transition_file.stat().st_size > 0:
+            return
         with open(self.ice_transition_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
@@ -166,6 +184,8 @@ class TelemetryLogger:
             # Energy balance
             'energy_change_rate', 'diffusion_flux_bottom', 'latent_heat_flux_total'
         ]
+        if self.append and self.temperature_file.exists() and self.temperature_file.stat().st_size > 0:
+            return
         with open(self.temperature_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
@@ -174,7 +194,8 @@ class TelemetryLogger:
                       mass, droplet_start, droplet_end, max_div, mean_div,
                       psi=None, T=None, geometry=None, dx=None,
                       droplet_bottom=None, droplet_top=None,
-                      curvature_max=None, curvature_mean=None):
+                      curvature_max=None, curvature_mean=None,
+                      contact_line_forces=None):
         """Log general statistics. geometry: from state (optional, for terrain stats)."""
         # Convert to NumPy if needed
         phi = self._convert_to_numpy(phi)
@@ -224,6 +245,32 @@ class TelemetryLogger:
             float(droplet_bottom) if droplet_bottom is not None else 0.0,
             float(droplet_top) if droplet_top is not None else 0.0,
             float(max_div), float(mean_div),
+            float((contact_line_forces or {}).get('left_index', -1.0)),
+            float((contact_line_forces or {}).get('right_index', -1.0)),
+            float((contact_line_forces or {}).get('sf_norm_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_norm_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_dyn_norm_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_hydro_norm_mean', 0.0)),
+            float((contact_line_forces or {}).get('g_norm', 0.0)),
+            float((contact_line_forces or {}).get('sf_to_g_ratio', 0.0)),
+            float((contact_line_forces or {}).get('sf_to_pg_dyn_ratio', 0.0)),
+            float((contact_line_forces or {}).get('sf_ax_mean_abs', 0.0)),
+            float((contact_line_forces or {}).get('pg_dyn_ax_mean_abs', 0.0)),
+            float((contact_line_forces or {}).get('sf_to_pg_dyn_ratio_xabs', 0.0)),
+            float((contact_line_forces or {}).get('sf_n_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_dyn_n_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_h_n_mean', 0.0)),
+            float((contact_line_forces or {}).get('g_n_mean', 0.0)),
+            float((contact_line_forces or {}).get('res_n_mean', 0.0)),
+            float((contact_line_forces or {}).get('sf_t_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_dyn_t_mean', 0.0)),
+            float((contact_line_forces or {}).get('pg_h_t_mean', 0.0)),
+            float((contact_line_forces or {}).get('g_t_mean', 0.0)),
+            float((contact_line_forces or {}).get('res_t_mean', 0.0)),
+            float((contact_line_forces or {}).get('sf_norm_mean_liquid', 0.0)),
+            float((contact_line_forces or {}).get('sf_norm_mean_gas', 0.0)),
+            float((contact_line_forces or {}).get('pg_dyn_norm_mean_liquid', 0.0)),
+            float((contact_line_forces or {}).get('pg_dyn_norm_mean_gas', 0.0)),
             # Geometry statistics
             hump_height_max, hump_height_mean, hump_height_min,
             surface_slope_max, surface_slope_mean
@@ -653,4 +700,3 @@ class TelemetryLogger:
         with open(self.temperature_file, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(row)
-

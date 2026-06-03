@@ -1,0 +1,22 @@
+{
+  "Nx": 96,
+  "Ny": 48,
+  "Lx": 4.0,
+  "Ly": 1.0,
+  "dt": 5e-4,
+  "nu": 1e-2,
+  "steps": 400,
+  "include_advection": false,
+
+  "inlet_profile": "poiseuille",
+  "u_inlet": 1.0,
+
+  "top_bc": "no_slip",
+  "bottom_bc": "no_slip",
+  "outflow_right": true,
+
+  "save_plots": true,
+  "save_every": 10,
+  "log_dir": "experiment_staggered_poiseuille"
+}
+

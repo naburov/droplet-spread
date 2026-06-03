@@ -1,0 +1,106 @@
+{
+    "description": "Realistic 1.0mm water droplet (auto-generated from physical properties)",
+    "physical_params": {
+        "rho1": 0.0012272089761570825,
+        "rho2": 1.0,
+        "Re1": 18.176974903918314,
+        "Re2": 269.0337411328045,
+        "We1": 0.0012272089761570825,
+        "We2": 0.02,
+        "Pe": 10.0,
+        "epsilon": 0.015,
+        "contact_angle": 120.0,
+        "include_gravity": true,
+        "Fr": 2.726606107634755,
+        "g": -1.0,
+        "atm_pressure": 0.0,
+        "lambda_willmore": 0,
+        "epsilon_willmore": 0
+    },
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.0,
+        "Nx": 128,
+        "Ny": 128
+    },
+    "time_params": {
+        "dt": 3.702909458998216e-05,
+        "dt_initial": 1.851454729499108e-05,
+        "t_max": 0.5,
+        "checkpoint_interval": 250,
+        "cfl_number": 0.3,
+        "capillary_cfl_number": 0.5,
+        "curvature_cfl_number": 0.5
+    },
+    "initial_conditions": {
+        "droplet_radius": 0.2,
+        "droplet_center_x": 0.5,
+        "droplet_center_y": 0.0
+    },
+    "boundary_conditions": {
+        "pressure": {
+            "top": "open",
+            "bottom": "neumann",
+            "left": "neumann",
+            "right": "neumann",
+            "open_pressure": 0.0
+        },
+        "velocity": {
+            "top": "do_nothing",
+            "bottom": "no_slip",
+            "left": "slip_symmetry",
+            "right": "slip_symmetry"
+        },
+        "phase_field": {
+            "top": "neumann",
+            "bottom": "contact_angle",
+            "left": "neumann",
+            "right": "neumann",
+            "contact_angle_method": "robin"
+        },
+        "chemical_potential": {
+            "top": "zero_flux",
+            "bottom": "zero_flux",
+            "left": "zero_flux",
+            "right": "zero_flux"
+        },
+        "advection": {
+            "top": "open",
+            "bottom": "impermeable",
+            "left": "impermeable",
+            "right": "impermeable",
+            "cout": 1.0
+        }
+    },
+    "solver_params": {
+        "pressure_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.05,
+            "maxiter": 15000
+        },
+        "correction_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.05,
+            "maxiter": 15000
+        },
+        "ppe": {
+            "mean_div_threshold": 0.1,
+            "max_div_threshold": 0.15,
+            "use_local_ppe": false,
+            "local_threshold_factor": 0.2,
+            "max_iterations": 500,
+            "buffer_size": 5,
+            "boundary_conditions": {
+                "top": "neumann",
+                "bottom": "neumann",
+                "left": "neumann",
+                "right": "neumann"
+            }
+        }
+    },
+    "restart": {
+        "restart_from": null
+    }
+}

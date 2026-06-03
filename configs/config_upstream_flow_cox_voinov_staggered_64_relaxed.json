@@ -1,0 +1,132 @@
+{
+  "description": "Upstream flow with Cox-Voinov on a 64x64 staggered PPE grid. Relaxed parameters for easier, cheaper debug runs.",
+
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 35.0,
+    "Re2": 1000.0,
+    "We1": 0.02,
+    "We2": 3.0,
+    "Pe": 15.0,
+    "epsilon": 0.05,
+    "contact_angle": 60,
+    "include_gravity": true,
+    "Fr": 1.0,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {
+      "smooth_curvature": false,
+      "smoothing_radius": 1
+    }
+  },
+
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 64,
+    "Ny": 64
+  },
+
+  "time_params": {
+    "dt": 0.00075,
+    "dt_initial": 0.0005,
+    "t_max": 1.0,
+    "checkpoint_interval": 20,
+    "cfl_number": 0.4,
+    "capillary_cfl_number": 0.4,
+    "curvature_cfl_number": 0.4
+  },
+
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.18,
+    "droplet_center_x": 0.5,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.0075
+  },
+
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "dirichlet",
+      "dirichlet_values": {
+        "right": 0.0
+      }
+    },
+    "velocity": {
+      "top": "neumann",
+      "bottom": "no_slip",
+      "left": "dirichlet",
+      "right": "do_nothing",
+      "dirichlet_values": {
+        "left": {
+          "u": 1.0,
+          "v": 0.0
+        }
+      },
+      "dirichlet_profiles": {
+        "left": {
+          "type": "linear"
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 1.0,
+      "cox_voinov_exponent": 0.333
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1.0
+    }
+  },
+
+  "solver_params": {
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 500
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 500
+    },
+    "velocity_layout": "staggered",
+    "ppe": {
+      "mean_div_threshold": 0.5,
+      "max_div_threshold": 0.1,
+      "use_local_ppe": false,
+      "local_threshold_factor": 0.2,
+      "max_iterations": 600,
+      "buffer_size": 5,
+      "under_relaxation": 0.6
+    }
+  },
+
+  "restart": {
+    "restart_from": null
+  }
+}
+

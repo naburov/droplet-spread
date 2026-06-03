@@ -1,0 +1,115 @@
+{
+    "description": "Diagnostic: Air bubble rising through water to the surface",
+    
+    "physical_params": {
+        "rho1": 0.01,
+        "rho2": 1.0,
+        "Re1": 10.0,
+        "Re2": 100.0,
+        "We1": 0.001,
+        "We2": 0.1,
+        "Pe": 10.0,
+        "epsilon": 0.015,
+        "contact_angle": 90,
+        "include_gravity": true,
+        "Fr": 0.5,
+        "g": -1.0,
+        "atm_pressure": 0.0,
+        "lambda_willmore": 0,
+        "epsilon_willmore": 0
+    },
+    
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.5,
+        "Nx": 128,
+        "Ny": 192
+    },
+    
+    "time_params": {
+        "dt": 0.001,
+        "dt_initial": 0.0001,
+        "t_max": 3.0,
+        "checkpoint_interval": 100,
+        "cfl_number": 0.2,
+        "capillary_cfl_number": 0.5
+    },
+    
+    "initial_conditions": {
+        "type": "droplet",
+        "droplet_radius": 0.12,
+        "droplet_center_x": 0.5,
+        "droplet_center_y": 0.3,
+        "is_bubble": true,
+        "initial_velocity": {
+            "u": 0.0,
+            "v": 0.3
+        }
+    },
+    
+    "boundary_conditions": {
+        "pressure": {
+            "top": "open",
+            "bottom": "neumann",
+            "left": "neumann",
+            "right": "neumann",
+            "open_pressure": 0.0
+        },
+        "velocity": {
+            "top": "do_nothing",
+            "bottom": "no_slip",
+            "left": "slip_symmetry",
+            "right": "slip_symmetry"
+        },
+        "phase_field": {
+            "top": "neumann",
+            "bottom": "neumann",
+            "left": "neumann",
+            "right": "neumann",
+            "contact_angle_method": "simple"
+        },
+        "chemical_potential": {
+            "top": "zero_flux",
+            "bottom": "zero_flux",
+            "left": "zero_flux",
+            "right": "zero_flux"
+        },
+        "advection": {
+            "top": "open",
+            "bottom": "impermeable",
+            "left": "impermeable",
+            "right": "impermeable",
+            "cout": 1.0
+        }
+    },
+    
+    "solver_params": {
+        "pressure_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.01,
+            "maxiter": 5000
+        },
+        "correction_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.01,
+            "maxiter": 5000
+        },
+        "ppe": {
+            "mean_div_threshold": 0.05,
+            "max_div_threshold": 0.1,
+            "max_iterations": 1000,
+            "boundary_conditions": {
+                "top": "neumann",
+                "bottom": "neumann",
+                "left": "neumann",
+                "right": "neumann"
+            }
+        }
+    },
+    
+    "restart": {
+        "restart_from": null
+    }
+}

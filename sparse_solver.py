@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import sys
 
 class SparseSolverWrapper:
-    def __init__(self, Nx, Ny, dx, dy, backend="scipy"):
+    def __init__(self, Nx, Ny, dx, dy, backend="scipy", solver_params=None):
         self.Nx = Nx
         self.Ny = Ny
         self.dx = dx
@@ -19,6 +19,16 @@ class SparseSolverWrapper:
         self.top_boundary_condition = 'dirichlet' # 'dirichlet' or 'neumann'
         self.left_boundary_condition = 'dirichlet' # 'dirichlet' or 'neumann'
         self.right_boundary_condition = 'dirichlet' # 'dirichlet' or 'neumann'
+        
+        # Set solver parameters with defaults
+        self.accel = 'bicgstab'
+        self.tol = 0.1
+        self.maxiter = 1000
+        if solver_params:
+            self.accel = solver_params.get('accel', self.accel)
+            self.tol = solver_params.get('tol', self.tol)
+            self.maxiter = solver_params.get('maxiter', self.maxiter)
+        
         self.create_sparse_matrix()
         
         if backend == "scipy":
@@ -113,7 +123,7 @@ class SparseSolverWrapper:
             self.solution = self.solve_func(self.A, self.rhs.flatten()).reshape(self.rhs.shape)
         elif self.backend == "pyamg":
             residuals = []
-            arg_dict = {'accel': 'bicgstab', 'tol': 0.1, 'residuals': residuals}
+            arg_dict = {'accel': self.accel, 'tol': self.tol, 'residuals': residuals}
             if x0 is not None:
                 arg_dict['x0'] = x0.flatten()
             self.solution = self.solver.solve(self.rhs.flatten(), 

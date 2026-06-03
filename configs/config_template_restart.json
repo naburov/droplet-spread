@@ -1,0 +1,113 @@
+{
+    "description": "Restart from checkpoint with fixes for top-singularity instability",
+    
+    "physical_params": {
+        "rho1": 0.001225,
+        "rho2": 1.0,
+        "Re1": 35.0,
+        "Re2": 100.0,
+        "We1": 0.01,
+        "We2": 0.5,
+        "Pe": 10.0,
+        "epsilon": 0.025,
+        "contact_angle": 60,
+        "include_gravity": true,
+        "Fr": 1.0,
+        "g": -1.0,
+        "atm_pressure": 0.0,
+        "lambda_willmore": 0,
+        "epsilon_willmore": 0
+    },
+    
+    "grid_params": {
+        "Lx": 1.0,
+        "Ly": 1.0,
+        "Nx": 128,
+        "Ny": 128
+    },
+    
+    "time_params": {
+        "dt": 0.0005,
+        "dt_initial": 0.0001,
+        "t_max": 2.0,
+        "checkpoint_interval": 500,
+        "cfl_number": 0.05,
+        "capillary_cfl_number": 0.05,
+        "curvature_cfl_number": 0.1
+    },
+    
+    "initial_conditions": {
+        "droplet_radius": 0.2,
+        "droplet_center_x": 0.5,
+        "droplet_center_y": 0.0
+    },
+    
+    "boundary_conditions": {
+        "pressure": {
+            "top": "open",
+            "bottom": "neumann",
+            "left": "neumann",
+            "right": "neumann",
+            "open_pressure": 0.0
+        },
+        "velocity": {
+            "top": "do_nothing",
+            "bottom": "no_slip",
+            "left": "slip_symmetry",
+            "right": "slip_symmetry"
+        },
+        "phase_field": {
+            "top": "neumann",
+            "bottom": "contact_angle",
+            "left": "neumann",
+            "right": "neumann",
+            "contact_angle_method": "simple"
+        },
+        "chemical_potential": {
+            "top": "zero_flux",
+            "bottom": "zero_flux",
+            "left": "zero_flux",
+            "right": "zero_flux"
+        },
+        "advection": {
+            "top": "open",
+            "bottom": "impermeable",
+            "left": "impermeable",
+            "right": "impermeable",
+            "cout": 1.0
+        }
+    },
+    
+    "solver_params": {
+        "pressure_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.01,
+            "maxiter": 10000
+        },
+        "correction_solver": {
+            "backend": "pyamg",
+            "accel": "bicgstab",
+            "tol": 0.01,
+            "maxiter": 10000
+        },
+        "ppe": {
+            "mean_div_threshold": 0.02,
+            "max_div_threshold": 0.05,
+            "use_local_ppe": false,
+            "local_threshold_factor": 0.2,
+            "max_iterations": 500,
+            "buffer_size": 5,
+            "boundary_conditions": {
+                "top": "dirichlet",
+                "bottom": "neumann",
+                "left": "neumann",
+                "right": "neumann"
+            }
+        }
+    },
+    
+    "restart": {
+        "restart_from": "experiment_20260125_003550/checkpoints/checkpoint_020000.npz"
+    }
+}

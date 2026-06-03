@@ -1,0 +1,115 @@
+{
+  "description": "Local shear-only wetting test. Simple contact-angle solver, 120 degree case.",
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 35.0,
+    "Re2": 500.0,
+    "We1": 0.01,
+    "We2": 2.0,
+    "Pe": 20.0,
+    "epsilon": 0.04,
+    "contact_angle": 120,
+    "include_gravity": false,
+    "Fr": 1.0,
+    "g": 0.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0.0,
+    "epsilon_willmore": 0.0
+  },
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 64,
+    "Ny": 64
+  },
+  "time_params": {
+    "dt": 0.0005,
+    "dt_initial": 0.00025,
+    "t_max": 0.002,
+    "checkpoint_interval": 20,
+    "cfl_number": 0.1,
+    "capillary_cfl_number": 0.1,
+    "curvature_cfl_number": 0.1
+  },
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.15,
+    "droplet_center_x": 0.5,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.01
+  },
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann"
+    },
+    "velocity": {
+      "top": "dirichlet",
+      "bottom": "navier_slip",
+      "slip_length": 0.02,
+      "left": "slip_symmetry",
+      "right": "slip_symmetry",
+      "dirichlet_values": {
+        "top": {
+          "u": 1.0,
+          "v": 0.0
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": false,
+      "cox_voinov_coefficient": 1.0,
+      "cox_voinov_exponent": 0.333
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1.0
+    }
+  },
+  "solver_params": {
+    "phase_field_solver": "simple",
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "ppe": {
+      "mean_div_threshold": 0.15,
+      "max_div_threshold": 0.25,
+      "use_local_ppe": false,
+      "local_threshold_factor": 0.2,
+      "max_iterations": 1000,
+      "buffer_size": 5
+    }
+  },
+  "visualization": {
+    "use_pyvista": false
+  },
+  "restart": {
+    "restart_from": null
+  }
+}

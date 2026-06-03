@@ -1,0 +1,134 @@
+{
+  "description": "Upstream flow, real-experiment-like: Re1=0.43, Re2=0.059, We1/We2/Fr from experiment, slip_length=0.02, C-V slope 99, theta0=50°, R=0.18, 128², epsilon=0.01.",
+
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 0.43,
+    "Re2": 0.059,
+    "We1": 3.7e-7,
+    "We2": 2.9e-4,
+    "Pe": 500.0,
+    "epsilon": 0.02,
+    "contact_angle": 50,
+    "include_gravity": true,
+    "Fr": 1.65e-5,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {
+      "smooth_curvature": true,
+      "smoothing_radius": 1
+    }
+  },
+
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 128,
+    "Ny": 128
+  },
+
+  "time_params": {
+    "dt": 0.0005,
+    "dt_initial": 0.00025,
+    "t_max": 1.0,
+    "checkpoint_interval": 20,
+    "cfl_number": 0.3,
+    "capillary_cfl_number": 0.1,
+    "curvature_cfl_number": 0.1
+  },
+
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.18,
+    "droplet_center_x": 0.45,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.02
+  },
+
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "dirichlet",
+      "dirichlet_values": {
+        "right": 0.0
+      },
+      "open_pressure": 0.0
+    },
+    "velocity": {
+      "top": "do_nothing",
+      "bottom": "navier_slip",
+      "slip_length": 0.02,
+      "left": "dirichlet",
+      "right": "do_nothing",
+      "dirichlet_values": {
+        "left": {
+          "u": 8.0,
+          "v": 0.0
+        }
+      },
+      "dirichlet_profiles": {
+        "left": {
+          "type": "boundary_layer",
+          "subtype": "blasius",
+          "bl_exponent": 0.5,
+          "transition_scale": 1.0,
+          "characteristic_length": "Ly"
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 99.0,
+      "cox_voinov_exponent": 3
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "open",
+      "right": "open",
+      "cout": 1.0
+    }
+  },
+
+  "solver_params": {
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 500
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 500
+    },
+    "velocity_layout": "staggered",
+    "ppe": {
+      "mean_div_threshold": 0.5,
+      "max_div_threshold": 0.1,
+      "max_iterations": 600,
+      "under_relaxation": 0.5
+    }
+  },
+
+  "restart": {
+    "restart_from": null
+  }
+}

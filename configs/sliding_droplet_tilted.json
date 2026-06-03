@@ -1,0 +1,134 @@
+{
+  "description": "Sliding droplet on tilted surface (left bottom origin). Droplet placed right of center on the surface.",
+
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 35.0,
+    "Re2": 1000.0,
+    "We1": 0.5,
+    "We2": 100.0,
+    "Pe": 15.0,
+    "epsilon": 0.05,
+    "contact_angle": 60,
+    "include_gravity": true,
+    "Fr": 1.0,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {
+      "smooth_curvature": false,
+      "smoothing_radius": 1
+    }
+  },
+
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 64,
+    "Ny": 64
+  },
+
+  "geometry": {
+    "type": "tilted",
+    "origin": "bottom_left",
+    "degree": 15
+  },
+
+  "time_params": {
+    "dt": 0.00075,
+    "dt_initial": 0.0005,
+    "t_max": 1.0,
+    "checkpoint_interval": 1,
+    "cfl_number": 0.4,
+    "capillary_cfl_number": 1.0,
+    "curvature_cfl_number": 1.0
+  },
+
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.18,
+    "droplet_center_x": 0.7,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.02
+  },
+
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "dirichlet",
+      "right": "neumann",
+      "dirichlet_values": {
+        "left": 0.0
+      },
+      "open_pressure": 0.0
+    },
+    "velocity": {
+      "top": "do_nothing",
+      "bottom": "navier_slip",
+      "slip_length": 10.0,
+      "left": "do_nothing",
+      "right": "do_nothing"
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "geometry_aware",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 4.0,
+      "cox_voinov_exponent": 0.333
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "open",
+      "right": "open",
+      "cout": 1.0
+    }
+  },
+
+  "solver_params": {
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.1,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.1,
+      "maxiter": 2000
+    },
+    "velocity_layout": "staggered",
+    "ppe": {
+      "boundary_conditions": {
+        "top": "neumann",
+        "bottom": "neumann",
+        "left": "dirichlet",
+        "right": "neumann"
+      },
+      "div_threshold": 0.05,
+      "mean_div_threshold": 0.1,
+      "max_div_threshold": 0.1,
+      "max_iterations": 2000,
+      "under_relaxation": 1.0
+    }
+  },
+
+  "restart": {
+    "restart_from": null
+  },
+
+  "_bc_corner_compatibility": "Pressure: left=dirichlet (P=0 at i=0), others neumann; corners (0,0),(0,Ny-1) get P=0. Velocity: bottom=navier_slip, sides=do_nothing; corners not zeroed (no no_slip). Order: bottom then top then left then right; corner (0,0) ends as left do_nothing copy from (1,0). Advection: bottom impermeable then left open (outflow); corner (0,0) set by left open. Phase: bottom contact_angle then neumann; corner set by left neumann. All consistent."
+}

@@ -1,0 +1,22 @@
+{
+  "Nx": 128,
+  "Ny": 64,
+  "Lx": 6.0,
+  "Ly": 1.0,
+  "dt": 2.5e-4,
+  "nu": 5e-3,
+  "steps": 600,
+  "include_advection": true,
+
+  "inlet_profile": "uniform",
+  "u_inlet": 1.0,
+
+  "top_bc": "free_slip",
+  "bottom_bc": "no_slip",
+  "outflow_right": true,
+
+  "save_plots": true,
+  "save_every": 20,
+  "log_dir": "experiment_staggered_boundary_layer"
+}
+

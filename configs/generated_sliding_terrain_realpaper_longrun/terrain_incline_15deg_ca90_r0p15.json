@@ -1,0 +1,145 @@
+{
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 35.0,
+    "Re2": 500.0,
+    "We1": 0.01,
+    "We2": 2.0,
+    "Pe": 20.0,
+    "epsilon": 0.04,
+    "alpha": 1.0,
+    "phase_penalty": 1000.0,
+    "contact_angle": 90,
+    "include_gravity": true,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "Fr": 1.0,
+    "lambda_willmore": 0.0,
+    "epsilon_willmore": 0.0,
+    "surface_tension": {
+      "smooth_curvature": false,
+      "smoothing_radius": 1
+    }
+  },
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 128,
+    "Ny": 128
+  },
+  "time_params": {
+    "dt": 0.0005,
+    "t_max": 0.3,
+    "checkpoint_interval": 2500,
+    "dt_initial": 0.00025,
+    "cfl_number": 0.1,
+    "capillary_cfl_number": 0.1,
+    "curvature_cfl_number": 0.1
+  },
+  "initial_conditions": {
+    "droplet_radius": 0.15,
+    "type": "droplet",
+    "droplet_center_x": 0.45,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.01,
+    "geometry": {
+      "type": "tilted",
+      "degree": 15.0,
+      "origin": "bottom_left"
+    }
+  },
+  "restart": {
+    "restart_from": null
+  },
+  "description": "Inclined-plane terrain case: CA=90, R=0.15, slope=15deg, gravity-driven. Long-run horizon x2.",
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "dirichlet",
+      "dirichlet_values": {
+        "right": 0.0
+      }
+    },
+    "velocity": {
+      "top": "do_nothing",
+      "bottom": "navier_slip",
+      "slip_length": 0.02,
+      "left": "do_nothing",
+      "right": "do_nothing",
+      "dirichlet_values": {},
+      "dirichlet_profiles": {}
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "ghost_cell",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 1.0,
+      "cox_voinov_exponent": 0.333,
+      "contact_angle_ghost_law": "analytic_gradient",
+      "contact_angle_full_wall": true,
+      "contact_mask_soft_band": 0.8,
+      "contact_mask_grad_scale": 0.5
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "open",
+      "right": "open",
+      "cout": 1.0
+    }
+  },
+  "solver_params": {
+    "phase_field_solver": "ghost_cell",
+    "phase_update_mode": "semi_implicit_ch",
+    "phase_diffusion_solver_backend": "pyamg",
+    "phase_diffusion_solver_tol": 1e-08,
+    "phase_diffusion_solver_maxiter": 500,
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "ppe": {
+      "mean_div_threshold": 0.15,
+      "max_div_threshold": 0.25,
+      "use_local_ppe": false,
+      "local_threshold_factor": 0.2,
+      "max_iterations": 1000,
+      "buffer_size": 5,
+      "under_relaxation": 1.0,
+      "convergence_mode": "interior"
+    },
+    "physical_pressure": {
+      "boundary_conditions": {
+        "top": "neumann",
+        "bottom": "neumann",
+        "left": "neumann",
+        "right": "neumann"
+      }
+    },
+    "velocity_layout": "staggered"
+  },
+  "visualization": {
+    "use_pyvista": false,
+    "save_interval": 5000
+  }
+}

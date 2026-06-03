@@ -1,0 +1,134 @@
+{
+  "description": "Upstream flow with Cox-Voinov on 64x64 staggered. Tuned for visible flow-around-hump: stronger inlet, higher Re1 (air), larger droplet.",
+
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 500.0,
+    "Re2": 100.0,
+    "We1": 100.0,
+    "We2": 0.01,
+    "Pe": 500.0,
+    "epsilon": 0.02,
+    "contact_angle": 80,
+    "include_gravity": true,
+    "Fr": 0.8,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {
+      "smooth_curvature": false,
+      "smoothing_radius": 1
+    }
+  },
+
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 64,
+    "Ny": 64
+  },
+
+  "time_params": {
+    "dt": 0.0001,
+    "dt_initial": 0.00025,
+    "t_max": 10.0,
+    "checkpoint_interval": 10,
+    "cfl_number": 0.3,
+    "capillary_cfl_number": 100.0,
+    "curvature_cfl_number": 100.0
+  },
+
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.1,
+    "droplet_center_x": 0.45,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.02
+  },
+
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "dirichlet",
+      "dirichlet_values": {
+        "right": 0.0
+      },
+      "open_pressure": 0.0
+    },
+    "velocity": {
+      "top": "do_nothing",
+      "bottom": "navier_slip",
+      "slip_length": 20000.0,
+      "left": "dirichlet",
+      "right": "do_nothing",
+      "dirichlet_values": {
+        "left": {
+          "u": 1.0,
+          "v": 0.0
+        }
+      },
+      "dirichlet_profiles": {
+        "left": {
+          "type": "boundary_layer",
+          "subtype": "blasius",
+          "bl_exponent": 0.5,
+          "transition_scale": 1.0,
+          "characteristic_length": "Ly"
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 45.0,
+      "cox_voinov_exponent": 3.0
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "open",
+      "right": "open",
+      "cout": 1.0
+    }
+  },
+
+  "solver_params": {
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.01,
+      "maxiter": 1500
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.01,
+      "maxiter": 1500
+    },
+    "velocity_layout": "staggered",
+    "ppe": {
+      "mean_div_threshold": 0.5,
+      "max_div_threshold": 0.2,
+      "max_iterations": 10000,
+      "under_relaxation": 1.0
+    }
+  },
+
+  "restart": {
+    "restart_from": null
+  }
+}

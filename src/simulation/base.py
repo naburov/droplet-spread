@@ -15,6 +15,7 @@ import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 import numpy as np
+import jax.numpy as jnp
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -31,6 +32,8 @@ from visualization.plot_telemetry import (
     plot_contact_line_dynamics,
 )
 from simulation.initial_conditions import get_borders_of_droplet, get_y_borders_of_droplet
+from numerics.finite_differences import jax_gradient
+from physics.pressure import compute_hydrostatic_pressure
 
 
 class BaseSimulation(ABC):
@@ -92,16 +95,37 @@ class BaseSimulation(ABC):
         # Initialize telemetry (subclasses may override include_ice_water)
         self.include_ice_water = self.state.include_ice_water
         self.telemetry_logger = TelemetryLogger(
-            self.output_dir, include_ice_water=self.include_ice_water, config=config
+            self.output_dir,
+            include_ice_water=self.include_ice_water,
+            config=config,
+            append=self.restart_from is not None,
         )
         print(f"Telemetry logging initialized in {self.output_dir}")
         
         # Timing
         self.step_times = []
+        self._last_curvature_max = None
+        self._last_curvature_mean = None
+        self._pyvista_disabled_due_to_error = False
+
+    def _should_use_pyvista(self):
+        return (
+            PYVISTA_AVAILABLE
+            and self.config.get("visualization", {}).get("use_pyvista", True)
+            and not os.environ.get("DISABLE_PYVISTA")
+            and not self._pyvista_disabled_due_to_error
+        )
     
     def setup(self):
         """Setup before main loop: visualizations, diagnostics."""
-        print("Initialized flat geometry")
+        if getattr(self.state.geometry, "has_geometry", False):
+            geometry_type = (
+                getattr(getattr(self.state, "context", None), "geometry_type", None)
+                or self.config.get("initial_conditions", {}).get("geometry", {}).get("type", "non-flat")
+            )
+            print(f"Initialized {geometry_type} geometry")
+        else:
+            print("Initialized flat geometry")
         if self.restart_from is None:
             print("Applying contact angle boundary conditions to initial phase field...")
             self.state.phi = self.state.phase_field_bc.apply_boundary_conditions(
@@ -110,28 +134,36 @@ class BaseSimulation(ABC):
             )
             print("Contact angle BC applied")
         
-        # Initial phase field visualization
-        plt.imshow(self.state.phi.T, extent=[0, self.state.Lx, 0, self.state.Ly], origin='lower', cmap='viridis')
-        plt.colorbar(label='Phase Field (phi)')
-        plt.title('Initial Phase Field')
-        plt.xlabel('X-axis')
-        plt.ylabel('Y-axis')
-        plt.savefig(f'{self.output_dir}/initial_phase_field.png', bbox_inches='tight')
-        plt.clf()
+        if self.restart_from is None:
+            plt.imshow(self.state.phi.T, extent=[0, self.state.Lx, 0, self.state.Ly], origin='lower', cmap='viridis')
+            plt.colorbar(label='Phase Field (phi)')
+            plt.title('Initial Phase Field')
+            plt.xlabel('X-axis')
+            plt.ylabel('Y-axis')
+            plt.savefig(f'{self.output_dir}/initial_phase_field.png', bbox_inches='tight')
+            plt.clf()
         
         # Create initial joint plot (PyVista when available and enabled, else matplotlib)
-        use_pyvista = (
-            PYVISTA_AVAILABLE
-            and self.config.get("visualization", {}).get("use_pyvista", True)
-            and not os.environ.get("DISABLE_PYVISTA")
-        )
+        use_pyvista = self._should_use_pyvista()
         viz_backend = "PyVista" if use_pyvista else "matplotlib"
-        print(f"Creating initial state visualization ({viz_backend})...")
-        self._create_joint_plot(step=0)
-        print(f"Initial state plot saved to {self.visualization_dir}/joint_plot_step_0.png")
+        if self.restart_from is None:
+            print(f"Creating initial state visualization ({viz_backend})...")
+            self._create_joint_plot(step=0)
+            print(f"Initial state plot saved to {self.visualization_dir}/joint_plot_step_0.png")
+        else:
+            print(f"Resuming from {self.restart_from} at step {self.state.step}, t={self.state.t:.6f}")
+            print("Re-applying contact angle BC to resumed phase field...")
+            import jax.numpy as jnp
+            self.state.phi = jnp.asarray(
+                self.state.phase_field_bc.apply_boundary_conditions(
+                    jnp.asarray(self.state.phi), self.state.dx, self.state.dy, use_jax=True,
+                    geometry=self.state.geometry, U=self.state.U,
+                )
+            )
         
         # First-step diagnostics
-        self._create_first_step_diagnostics()
+        if self.restart_from is None:
+            self._create_first_step_diagnostics()
         
         print("Starting simulation...")
     
@@ -163,6 +195,8 @@ class BaseSimulation(ABC):
             # Progress output
             if self.state.step % 10 == 0:
                 self._print_progress()
+            if self.state.step % 500 == 0:
+                self._log_memory_usage()
             
             # Checkpointing and visualization
             if self.state.step % self.checkpoint_interval == 0:
@@ -219,13 +253,15 @@ class BaseSimulation(ABC):
             Ly=self.state.Ly,
             geometry=self.state.geometry,
         )
-        use_pyvista = (
-            PYVISTA_AVAILABLE
-            and self.config.get("visualization", {}).get("use_pyvista", True)
-            and not os.environ.get("DISABLE_PYVISTA")
-        )
+        use_pyvista = self._should_use_pyvista()
         if use_pyvista:
-            create_joint_plot_pyvista_full(**kwargs)
+            try:
+                create_joint_plot_pyvista_full(**kwargs)
+                return
+            except Exception as exc:
+                self._pyvista_disabled_due_to_error = True
+                print(f"Warning: PyVista plotting failed, falling back to matplotlib for the rest of the run: {exc}")
+                create_joint_plot(**kwargs)
         else:
             create_joint_plot(**kwargs)
     
@@ -249,17 +285,26 @@ class BaseSimulation(ABC):
         start_of_droplet, end_of_droplet = get_borders_of_droplet(self.state.phi)
         bottom_of_droplet, top_of_droplet = get_y_borders_of_droplet(self.state.phi)
         rho = self.state.compute_density()
-        mass = np.sum(rho[self.state.phi < 0]) * self.state.dx * self.state.dy
+        liquid_fraction = np.clip(0.5 * (1.0 - np.asarray(self.state.phi)), 0.0, 1.0)
+        mass = float(np.sum(liquid_fraction) * self.state.dx * self.state.dy)
         
         # Store for subclasses and progress output
         self._last_mass = mass
         self._last_droplet_bounds = (start_of_droplet, end_of_droplet, bottom_of_droplet, top_of_droplet)
         
         surface_tension = self.state.compute_surface_tension()
+        contact_line_forces = self._compute_contact_line_force_metrics(
+            phi=self.state.phi,
+            P=self.state.P,
+            surface_tension=surface_tension,
+            rho=rho,
+            dx=self.state.dx,
+            dy=self.state.dy,
+        )
         
         # Get curvature stats if available (computed by subclass)
-        curvature_max = getattr(self, '_last_curvature_max', None)
-        curvature_mean = getattr(self, '_last_curvature_mean', None)
+        curvature_max = self._last_curvature_max
+        curvature_mean = self._last_curvature_mean
         
         self.telemetry_logger.log_statistics(
             step=self.state.step,
@@ -281,7 +326,8 @@ class BaseSimulation(ABC):
             geometry=self.state.geometry,
             dx=self.state.dx,
             curvature_max=curvature_max,
-            curvature_mean=curvature_mean
+            curvature_mean=curvature_mean,
+            contact_line_forces=contact_line_forces,
         )
         
         self.telemetry_logger.log_boundary_statistics(
@@ -309,6 +355,31 @@ class BaseSimulation(ABC):
             mean_div_threshold=self.mean_div_threshold
         )
     
+    def _log_memory_usage(self):
+        """Log process RSS and JAX device memory (when available)."""
+        import os
+        rss_mb = None
+        try:
+            import psutil
+            rss_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+        except ImportError:
+            pass
+        jax_mb = None
+        try:
+            from jax.lib import xla_bridge
+            stats = xla_bridge.get_backend().memory_stats()
+            if stats and "bytes_in_use" in stats:
+                jax_mb = float(stats["bytes_in_use"]) / (1024 * 1024)
+        except Exception:
+            pass
+        parts = [f"step={self.state.step}"]
+        if rss_mb is not None:
+            parts.append(f"rss_mb={rss_mb:.1f}")
+        if jax_mb is not None:
+            parts.append(f"jax_mb={jax_mb:.1f}")
+        if len(parts) > 1:
+            print("Memory: " + ", ".join(parts))
+
     def _print_progress(self):
         """Print progress information."""
         start, end, bottom, top = self._last_droplet_bounds
@@ -320,6 +391,193 @@ class BaseSimulation(ABC):
         print(f"Time per step: {np.mean(self.step_times):.6f}")
         print(f"Droplet mass: {self._last_mass}")
         print(f"Start/end of droplet: {start} - {end}")
+
+    def _compute_contact_line_force_metrics(self, phi, P, surface_tension, rho, dx, dy):
+        """Compute force-balance diagnostics in a narrow contact-line strip near the wall."""
+        phi_np = np.array(phi)
+        P_np = np.array(P)
+        sf_np = np.array(surface_tension)
+        rho_np = np.array(rho)
+        Nx, Ny = phi_np.shape
+        force_diag_cfg = self.config.get("solver_params", {}).get("force_diagnostics", {})
+        use_ppe_corr_pressure = bool(force_diag_cfg.get("use_ppe_correction_pressure", False))
+        pressure_smoothing_passes = int(force_diag_cfg.get("pressure_smoothing_passes", 1))
+        contact_strip_height = int(force_diag_cfg.get("contact_strip_height", 4))
+        robust_trim_quantile = float(force_diag_cfg.get("robust_trim_quantile", 0.1))
+
+        def _smooth_2d(arr, passes=1):
+            out = np.array(arr, dtype=np.float64, copy=True)
+            if out.ndim != 2 or passes <= 0:
+                return out
+            kernel = np.array([0.25, 0.5, 0.25], dtype=np.float64)
+            for _ in range(passes):
+                # x-pass
+                px = np.pad(out, ((1, 1), (0, 0)), mode="edge")
+                out = (
+                    kernel[0] * px[:-2, :]
+                    + kernel[1] * px[1:-1, :]
+                    + kernel[2] * px[2:, :]
+                )
+                # y-pass
+                py = np.pad(out, ((0, 0), (1, 1)), mode="edge")
+                out = (
+                    kernel[0] * py[:, :-2]
+                    + kernel[1] * py[:, 1:-1]
+                    + kernel[2] * py[:, 2:]
+                )
+            return out
+
+        def _robust_mean_1d(values):
+            if values.size == 0:
+                return 0.0
+            if values.size < 10:
+                return float(np.mean(values))
+            q = min(max(robust_trim_quantile, 0.0), 0.49)
+            lo = np.quantile(values, q)
+            hi = np.quantile(values, 1.0 - q)
+            core = values[(values >= lo) & (values <= hi)]
+            if core.size == 0:
+                return float(np.mean(values))
+            return float(np.mean(core))
+
+        def _robust_mean_dot(vec, direction, mask):
+            if not np.any(mask):
+                return 0.0
+            proj = np.sum(vec[mask] * direction[mask], axis=1)
+            return _robust_mean_1d(proj)
+
+        if Ny < 2:
+            return {
+                "left_index": -1.0, "right_index": -1.0,
+                "sf_norm_mean": 0.0, "pg_norm_mean": 0.0, "pg_dyn_norm_mean": 0.0, "pg_hydro_norm_mean": 0.0,
+                "g_norm": 0.0, "sf_to_g_ratio": 0.0, "sf_to_pg_dyn_ratio": 0.0,
+                "sf_ax_mean_abs": 0.0, "pg_dyn_ax_mean_abs": 0.0,
+                "sf_to_pg_dyn_ratio_xabs": 0.0,
+                "sf_n_mean": 0.0, "pg_dyn_n_mean": 0.0, "pg_h_n_mean": 0.0, "g_n_mean": 0.0, "res_n_mean": 0.0,
+                "sf_t_mean": 0.0, "pg_dyn_t_mean": 0.0, "pg_h_t_mean": 0.0, "g_t_mean": 0.0, "res_t_mean": 0.0,
+                "sf_norm_mean_liquid": 0.0, "sf_norm_mean_gas": 0.0,
+                "pg_dyn_norm_mean_liquid": 0.0, "pg_dyn_norm_mean_gas": 0.0,
+            }
+
+        phi_bottom = phi_np[:, 0]
+        phi_above = phi_np[:, 1]
+        contact_mask = ((phi_bottom * phi_above) < 0.0) | (np.abs(phi_bottom) < 0.5)
+        idx = np.where(contact_mask)[0]
+        if idx.size == 0:
+            return {
+                "left_index": -1.0, "right_index": -1.0,
+                "sf_norm_mean": 0.0, "pg_norm_mean": 0.0, "pg_dyn_norm_mean": 0.0, "pg_hydro_norm_mean": 0.0,
+                "g_norm": abs(float(self.state.g) / max(float(self.state.Fr) ** 2, 1e-12)),
+                "sf_to_g_ratio": 0.0, "sf_to_pg_dyn_ratio": 0.0,
+                "sf_ax_mean_abs": 0.0, "pg_dyn_ax_mean_abs": 0.0,
+                "sf_to_pg_dyn_ratio_xabs": 0.0,
+                "sf_n_mean": 0.0, "pg_dyn_n_mean": 0.0, "pg_h_n_mean": 0.0, "g_n_mean": 0.0, "res_n_mean": 0.0,
+                "sf_t_mean": 0.0, "pg_dyn_t_mean": 0.0, "pg_h_t_mean": 0.0, "g_t_mean": 0.0, "res_t_mean": 0.0,
+                "sf_norm_mean_liquid": 0.0, "sf_norm_mean_gas": 0.0,
+                "pg_dyn_norm_mean_liquid": 0.0, "pg_dyn_norm_mean_gas": 0.0,
+            }
+
+        left_idx = int(idx.min())
+        right_idx = int(idx.max())
+        pad = 2
+        i0 = max(0, left_idx - pad)
+        i1 = min(Nx - 1, right_idx + pad)
+        j1 = min(Ny, max(2, contact_strip_height))
+        region = np.zeros((Nx, Ny), dtype=bool)
+        region[i0:i1 + 1, 0:j1] = True
+
+        # Optional pressure correction contribution from the latest PPE step.
+        # Disabled by default as it can inject high-frequency checker noise.
+        P_eff = P_np
+        if use_ppe_corr_pressure and isinstance(self._last_ppe_info, dict):
+            p_corr_out = self._last_ppe_info.get("p_corr_out")
+            if p_corr_out is not None:
+                p_corr_np = np.array(p_corr_out)
+                if p_corr_np.shape == P_np.shape:
+                    P_eff = P_np + p_corr_np
+        P_eff = _smooth_2d(P_eff, passes=pressure_smoothing_passes)
+
+        inv_rho = 1.0 / np.maximum(rho_np, 1e-12)
+        grad_p = np.array(jax_gradient(jnp.array(P_eff), float(dx), float(dy), self.state.geometry.f_1_grid))
+        a_pg = -grad_p * inv_rho[..., None]
+
+        p_hydro = np.array(
+            compute_hydrostatic_pressure(
+                jnp.array(rho_np), float(self.state.g), float(dy),
+                float(self.state.Fr), float(self.state.atm_pressure),
+            )
+        )
+        p_dyn = P_eff - p_hydro
+        grad_p_h = np.array(jax_gradient(jnp.array(p_hydro), float(dx), float(dy), self.state.geometry.f_1_grid))
+        grad_p_dyn = np.array(jax_gradient(jnp.array(p_dyn), float(dx), float(dy), self.state.geometry.f_1_grid))
+        a_pg_h = -grad_p_h * inv_rho[..., None]
+        a_pg_dyn = -grad_p_dyn * inv_rho[..., None]
+        a_sf = -sf_np * inv_rho[..., None]
+
+        g_norm = abs(float(self.state.g) / max(float(self.state.Fr) ** 2, 1e-12))
+        # Focus diagnostics on interface-adjacent cells to avoid bulk/gas dilution.
+        interface_band = np.abs(phi_np) < 0.75
+        m = region & interface_band
+        if not np.any(m):
+            m = region
+        sf_norm = np.linalg.norm(a_sf[m], axis=1) if np.any(m) else np.array([0.0])
+        pg_norm = np.linalg.norm(a_pg[m], axis=1) if np.any(m) else np.array([0.0])
+        pg_dyn_norm = np.linalg.norm(a_pg_dyn[m], axis=1) if np.any(m) else np.array([0.0])
+        pg_h_norm = np.linalg.norm(a_pg_h[m], axis=1) if np.any(m) else np.array([0.0])
+
+        sf_norm_mean = _robust_mean_1d(sf_norm)
+        pg_norm_mean = _robust_mean_1d(pg_norm)
+        pg_dyn_norm_mean = _robust_mean_1d(pg_dyn_norm)
+        pg_h_norm_mean = _robust_mean_1d(pg_h_norm)
+        sf_ax_mean_abs = _robust_mean_1d(np.abs(a_sf[m, 0])) if np.any(m) else 0.0
+        pg_dyn_ax_mean_abs = _robust_mean_1d(np.abs(a_pg_dyn[m, 0])) if np.any(m) else 0.0
+        sf_to_pg_dyn_ratio_xabs = float(sf_ax_mean_abs / max(pg_dyn_ax_mean_abs, 1e-12))
+
+        # Signed decomposition along local interface normal/tangent.
+        grad_phi = np.array(jax_gradient(jnp.array(phi_np), float(dx), float(dy), self.state.geometry.f_1_grid))
+        nrm = np.linalg.norm(grad_phi, axis=-1, keepdims=True)
+        n_hat = grad_phi / np.maximum(nrm, 1e-12)
+        t_hat = np.concatenate([-n_hat[..., 1:2], n_hat[..., 0:1]], axis=-1)
+        g_vec = np.zeros_like(a_sf)
+        g_vec[..., 1] = float(self.state.g) / max(float(self.state.Fr) ** 2, 1e-12)
+        a_res = a_sf + a_pg_dyn + a_pg_h + g_vec
+
+        # Phase split in the same region for liquid/gas sensitivity checks.
+        liquid_mask = m & (phi_np < 0.0)
+        gas_mask = m & (phi_np >= 0.0)
+        sf_norm_mean_liquid = _robust_mean_1d(np.linalg.norm(a_sf[liquid_mask], axis=1)) if np.any(liquid_mask) else 0.0
+        sf_norm_mean_gas = _robust_mean_1d(np.linalg.norm(a_sf[gas_mask], axis=1)) if np.any(gas_mask) else 0.0
+        pg_dyn_norm_mean_liquid = _robust_mean_1d(np.linalg.norm(a_pg_dyn[liquid_mask], axis=1)) if np.any(liquid_mask) else 0.0
+        pg_dyn_norm_mean_gas = _robust_mean_1d(np.linalg.norm(a_pg_dyn[gas_mask], axis=1)) if np.any(gas_mask) else 0.0
+
+        return {
+            "left_index": float(left_idx),
+            "right_index": float(right_idx),
+            "sf_norm_mean": sf_norm_mean,
+            "pg_norm_mean": pg_norm_mean,
+            "pg_dyn_norm_mean": pg_dyn_norm_mean,
+            "pg_hydro_norm_mean": pg_h_norm_mean,
+            "g_norm": float(g_norm),
+            "sf_to_g_ratio": float(sf_norm_mean / max(g_norm, 1e-12)),
+            "sf_to_pg_dyn_ratio": float(sf_norm_mean / max(pg_dyn_norm_mean, 1e-12)),
+            "sf_ax_mean_abs": sf_ax_mean_abs,
+            "pg_dyn_ax_mean_abs": pg_dyn_ax_mean_abs,
+            "sf_to_pg_dyn_ratio_xabs": sf_to_pg_dyn_ratio_xabs,
+            "sf_n_mean": _robust_mean_dot(a_sf, n_hat, m),
+            "pg_dyn_n_mean": _robust_mean_dot(a_pg_dyn, n_hat, m),
+            "pg_h_n_mean": _robust_mean_dot(a_pg_h, n_hat, m),
+            "g_n_mean": _robust_mean_dot(g_vec, n_hat, m),
+            "res_n_mean": _robust_mean_dot(a_res, n_hat, m),
+            "sf_t_mean": _robust_mean_dot(a_sf, t_hat, m),
+            "pg_dyn_t_mean": _robust_mean_dot(a_pg_dyn, t_hat, m),
+            "pg_h_t_mean": _robust_mean_dot(a_pg_h, t_hat, m),
+            "g_t_mean": _robust_mean_dot(g_vec, t_hat, m),
+            "res_t_mean": _robust_mean_dot(a_res, t_hat, m),
+            "sf_norm_mean_liquid": sf_norm_mean_liquid,
+            "sf_norm_mean_gas": sf_norm_mean_gas,
+            "pg_dyn_norm_mean_liquid": pg_dyn_norm_mean_liquid,
+            "pg_dyn_norm_mean_gas": pg_dyn_norm_mean_gas,
+        }
     
     def _generate_telemetry_plots(self):
         """Generate telemetry plots with optional baseline comparison."""
@@ -348,11 +606,14 @@ class BaseSimulation(ABC):
 
     def _save_checkpoint(self):
         """Save checkpoint."""
+        self.state.ensure_face_velocities()
         save_checkpoint(
             self.state.step, self.state.phi, self.state.U, self.state.P,
             directory=self.checkpoint_dir,
             psi=self.state.psi if self.include_ice_water else None,
             T=self.state.T if self.include_ice_water else None,
-            u_face=getattr(self.state, "u_face", None),
-            v_face=getattr(self.state, "v_face", None),
+            u_face=self.state.u_face,
+            v_face=self.state.v_face,
+            t=self.state.t,
+            dt=self.state.dt,
         )

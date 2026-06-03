@@ -1,0 +1,137 @@
+{
+  "description": "Flow-only simulation: Boundary layer velocity profile at left inlet (Blasius profile, Re2=500, δ~L/√Re), no droplet. Pure flow development to check for reverse flow issues.",
+  
+  "physical_params": {
+    "rho1": 0.01225,
+    "rho2": 1.0,
+    "Re1": 35.0,
+    "Re2": 500.0,
+    "We1": 0.01,
+    "We2": 2.0,
+    "Pe": 20.0,
+    "epsilon": 0.04,
+    "contact_angle": 60,
+    "include_gravity": true,
+    "Fr": 1.0,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0,
+    "epsilon_willmore": 0,
+    "surface_tension": {
+      "smooth_curvature": false,
+      "smoothing_radius": 1
+    }
+  },
+  
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 128,
+    "Ny": 128
+  },
+  
+  "time_params": {
+    "dt": 0.0005,
+    "dt_initial": 0.00025,
+    "t_max": 2.0,
+    "checkpoint_interval": 1,
+    "cfl_number": 0.1,
+    "capillary_cfl_number": 0.1,
+    "curvature_cfl_number": 0.1
+  },
+  
+  "initial_conditions": {
+    "type": "uniform_air",
+    "phi_value": 1.0,
+    "droplet_radius": 0.0
+  },
+  
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "dirichlet",
+      "dirichlet_values": {
+        "right": 0.0
+      }
+    },
+    "velocity": {
+      "top": "neumann",
+      "bottom": "no_slip",
+      "left": "dirichlet",
+      "right": "do_nothing",
+      "dirichlet_values": {
+        "left": {
+          "u": 1.0,
+          "v": 0.0
+        }
+      },
+      "dirichlet_profiles": {
+        "left": {
+          "type": "boundary_layer",
+          "subtype": "blasius",
+          "reynolds_number": "Re2",
+          "characteristic_length": "Ly",
+          "bl_exponent": 0.5
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple",
+      "use_cox_voinov": false,
+      "cox_voinov_coefficient": 1.0,
+      "cox_voinov_exponent": 0.333
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1.0
+    }
+  },
+  
+  "solver_params": {
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "ppe": {
+      "mean_div_threshold": 0.15,
+      "max_div_threshold": 0.25,
+      "use_local_ppe": false,
+      "local_threshold_factor": 0.2,
+      "max_iterations": 1000,
+      "buffer_size": 5,
+      "boundary_conditions": {
+        "top": "neumann",
+        "bottom": "neumann",
+        "left": "neumann",
+        "right": "neumann"
+      }
+    }
+  },
+  
+  "restart": {
+    "restart_from": null
+  }
+}

@@ -1,179 +1,78 @@
-# 📋 **Configuration Files Documentation**
+# Configuration Files
 
-## 🎯 **Enhanced Configuration Structure**
+## Available Configs
 
-The configuration files now include three major new sections for complete control over simulations:
+| Config | Description | Use Case |
+|--------|-------------|----------|
+| `staggered_poiseuille.json` | **Single-phase** channel flow (fluid only, no phase field) | Use `run_staggered_flow.py`, not `main.py` |
+| `config_template.json` | Base template with default parameters | Starting point for new simulations |
+| `config_droplet_simple.json` | Relaxed parameters, fast execution | Debugging and quick tests |
+| `config_droplet_realistic.json` | Realistic air-water parameters | Production simulations |
+| `config_droplet_geometry.json` | Non-flat surface (hump) | Geometry-aware BC testing |
+| `config_ice_template.json` | Ice-water transition template | Starting point for freezing simulations |
+| `config_droplet_ice.json` | Realistic freezing simulation | Production ice simulations |
 
-### **1. 🚧 Boundary Conditions (`boundary_conditions`)**
+## Quick Start
 
-Controls how the simulation behaves at domain boundaries:
+```bash
+# Single-phase Poiseuille (channel flow, no droplet/phase field)
+python3 run_staggered_flow.py --config configs/staggered_poiseuille.json
 
-```json
-"boundary_conditions": {
-    "pressure": {
-        "top": "dirichlet",      // Fixed pressure value
-        "bottom": "dirichlet",   // Fixed pressure value  
-        "left": "dirichlet",     // Fixed pressure value
-        "right": "dirichlet"     // Fixed pressure value
-    },
-    "velocity": {
-        "top": "neumann",        // Zero gradient (open atmosphere)
-        "bottom": "no_slip",     // Zero velocity (solid wall)
-        "left": "periodic",      // Periodic boundary
-        "right": "periodic"      // Periodic boundary
-    },
-    "phase_field": {
-        "top": "neumann",        // Zero gradient
-        "bottom": "contact_angle", // Prescribed contact angle
-        "left": "periodic",      // Periodic boundary
-        "right": "periodic"      // Periodic boundary
-    }
-}
+# Two-phase (droplet) simulations — use main.py:
+# Simple test
+PYTHONPATH=src python main.py --config configs/config_droplet_simple.json
+
+# Realistic simulation  
+PYTHONPATH=src python main.py --config configs/config_droplet_realistic.json
+
+# Geometry test
+PYTHONPATH=src python main.py --config configs/config_droplet_geometry.json
+
+# Ice simulation
+PYTHONPATH=src python main.py --config configs/config_droplet_ice.json
 ```
 
-**Available Boundary Types:**
-- **`dirichlet`**: Fixed value at boundary
-- **`neumann`**: Zero gradient (∂φ/∂n = 0)
-- **`no_slip`**: Zero velocity (for velocity field)
-- **`periodic`**: Periodic boundary conditions
-- **`contact_angle`**: Prescribed contact angle (for phase field)
+## Config Structure
 
-### **2. ⚙️ Solver Parameters (`solver_params`)**
+### physical_params
+- `rho1`, `rho2`: Density of phase 1 (air) and phase 2 (water)
+- `Re1`, `Re2`: Reynolds numbers
+- `We1`, `We2`: Weber numbers  
+- `Pe`: Peclet number (phase field mobility)
+- `epsilon`: Interface thickness
+- `contact_angle`: Contact angle in degrees
+- `Fr`: Froude number
+- `g`: Gravitational acceleration
+- `include_ice_water_transition`: Enable ice physics
 
-Controls numerical solution methods and convergence:
+### grid_params
+- `Lx`, `Ly`: Domain size
+- `Nx`, `Ny`: Grid resolution
 
-```json
-"solver_params": {
-    "pressure_solver": {
-        "backend": "pyamg",      // "pyamg" or "scipy"
-        "accel": "bicgstab",     // "bicgstab", "cg", "gmres"
-        "tol": 0.05,             // Convergence tolerance
-        "maxiter": 10000         // Maximum iterations
-    },
-    "correction_solver": {
-        "backend": "pyamg", 
-        "accel": "bicgstab",
-        "tol": 0.05,
-        "maxiter": 10000
-    },
-    "divergence_threshold": 0.05,        // Max allowed divergence
-    "max_correction_iterations": 100     // Max pressure correction steps
-}
-```
+### time_params
+- `dt`: Maximum time step
+- `dt_initial`: Initial time step (for ramp-up)
+- `t_max`: Simulation end time
+- `cfl_number`: CFL limit for advection
+- `capillary_cfl_number`: CFL limit for surface tension
 
-**Solver Backends:**
-- **`pyamg`**: Algebraic multigrid (recommended for large problems)
-- **`scipy`**: Direct sparse solver (faster for small problems)
+### boundary_conditions
+- `pressure`: Pressure BC (open, neumann, dirichlet)
+- `velocity`: Velocity BC (no_slip, do_nothing, slip_symmetry)
+- `phase_field`: Phase field BC (neumann, contact_angle)
+- `advection`: Advection BC (open, impermeable)
 
-**Acceleration Methods:**
-- **`bicgstab`**: BiCGSTAB (recommended)
-- **`cg`**: Conjugate Gradient
-- **`gmres`**: Generalized Minimal Residual
+For ice simulations:
+- `temperature`: Temperature BC
+- `ice_phase_field`: Ice phase field BC
 
-### **3. 📊 Plotting Parameters (`plotting_params`)**
+### solver_params
+- `pressure_solver`, `correction_solver`: Linear solver settings
+- `ppe`: Pressure projection settings
 
-Controls visualization output:
+## Phase Convention
 
-```json
-"plotting_params": {
-    "figure_size": [18, 14],           // [width, height] in inches
-    "dpi": 100,                        // Resolution (dots per inch)
-    "colormap": "viridis",             // Color scheme
-    "save_format": "png",              // Output format
-    "show_velocity_vectors": true,     // Show velocity field
-    "vector_density": 8,               // Vector spacing
-    "vector_scale": 50,                // Vector length scaling
-    "show_contours": true,             // Show contour lines
-    "contour_levels": 20,              // Number of contour levels
-    "show_colorbar": true,             // Show colorbar
-    "title_fontsize": 16,              // Title font size
-    "label_fontsize": 14,              // Axis label font size
-    "tick_fontsize": 12                // Tick label font size
-}
-```
-
-**Available Colormaps:**
-- **`viridis`**: Perceptually uniform (default)
-- **`plasma`**: High contrast
-- **`coolwarm`**: Diverging colors
-- **`jet`**: Classic rainbow
-- **`RdYlBu`**: Red-Yellow-Blue diverging
-
-## 🎨 **Configuration Presets**
-
-### **Water Droplet (`config_water_droplet.json`)**
-- **High resolution**: 150 DPI, 20×16 figure
-- **Plasma colormap**: High contrast for water dynamics
-- **Tight solver tolerance**: 0.01 for accuracy
-- **Dense vectors**: 6 density, 30 scale
-
-### **Air Bubble (`config_air_bubble.json`)**
-- **Medium resolution**: 120 DPI, 16×12 figure  
-- **Coolwarm colormap**: Diverging colors for bubble
-- **Moderate solver tolerance**: 0.02 for stability
-- **Sparse vectors**: 10 density, 40 scale
-
-### **Template (`config_template.json`)**
-- **Standard resolution**: 100 DPI, 18×14 figure
-- **Viridis colormap**: Balanced visualization
-- **Standard solver tolerance**: 0.05 for general use
-- **Medium vectors**: 8 density, 50 scale
-
-## 🔧 **Usage Examples**
-
-### **High-Resolution Water Droplet**
-```json
-"plotting_params": {
-    "figure_size": [24, 18],
-    "dpi": 300,
-    "colormap": "plasma"
-}
-```
-
-### **Fast Solver for Testing**
-```json
-"solver_params": {
-    "pressure_solver": {
-        "backend": "scipy",
-        "tol": 0.1,
-        "maxiter": 1000
-    }
-}
-```
-
-### **No-Slip Bottom Wall**
-```json
-"boundary_conditions": {
-    "velocity": {
-        "bottom": "no_slip"
-    }
-}
-```
-
-### **Open Top Boundary**
-```json
-"boundary_conditions": {
-    "velocity": {
-        "top": "neumann"
-    }
-}
-```
-
-## 🎯 **Benefits**
-
-1. **🎛️ Complete Control**: Fine-tune every aspect of simulation
-2. **🔧 Easy Tuning**: Adjust parameters without code changes
-3. **📊 Flexible Visualization**: Customize plots for different needs
-4. **⚡ Performance Optimization**: Balance speed vs accuracy
-5. **🎨 Visual Quality**: High-resolution outputs for publications
-6. **🔬 Research Ready**: Professional configuration management
-
-## 🚀 **Next Steps**
-
-1. **Test different configurations** to find optimal settings
-2. **Create custom presets** for specific research needs
-3. **Experiment with boundary conditions** for different physics
-4. **Tune solver parameters** for your hardware
-5. **Customize plotting** for publication-quality figures
-
-The enhanced configuration system makes your droplet spreading simulations **highly configurable** and **research-ready**! 🎉
+- Phase 1 (φ = +1): Air/gas
+- Phase 2 (φ = -1): Water/liquid
+- Ice phase (ψ = +1): Ice
+- Water phase (ψ = -1): Liquid water

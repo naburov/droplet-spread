@@ -1,9 +1,5 @@
 """
 Material properties calculations for two-phase flow.
-
-This module contains functions to calculate material properties
-based on the phase field, including density, Reynolds number,
-and Weber number calculations.
 """
 
 import numpy as np
@@ -12,172 +8,117 @@ from jax import jit
 
 
 def calculate_density(phi, rho1, rho2):
-    """Calculate the density based on the phase field.
+    """Calculate density using linear interpolation.
     
     Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-        rho1 (float): Density for phase 1.
-        rho2 (float): Density for phase 2.
+        phi: Phase field. phi=-1: liquid (rho2), phi=+1: air (rho1)
+        rho1: Density of air.
+        rho2: Density of liquid.
     
     Returns:
-        np.ndarray: Calculated density (shape: (Nx, Ny)).
+        Density field.
     """
-    # Calculate the density using the provided formula
-    phi_mapped = (phi + 1) / 2.0
-    rho = 1 / ((1 + phi_mapped) / (2 * rho2) + (1 - phi_mapped) / (2 * rho1))
-    return rho
+    phi_mapped = np.clip((phi + 1) / 2.0, 0.0, 1.0)
+    # Linear interpolation: rho = (1 - w) * rho2 + w * rho1
+    # where w = phi_mapped is the air fraction
+    return (1 - phi_mapped) * rho2 + phi_mapped * rho1
 
 
 @jit
 def jax_calculate_density(phi, rho1, rho2):
-    """JAX-compiled version of density calculation.
-    
-    Args:
-        phi (jnp.ndarray): Phase field (shape: (Nx, Ny)).
-        rho1 (float): Density for phase 1.
-        rho2 (float): Density for phase 2.
-    
-    Returns:
-        jnp.ndarray: Calculated density (shape: (Nx, Ny)).
-    """
-    phi_mapped = (phi + 1) / 2.0
-    rho = 1 / ((1 + phi_mapped) / (2 * rho2) + (1 - phi_mapped) / (2 * rho1))
-    return rho
+    """JAX version of density calculation using linear interpolation."""
+    phi_mapped = jnp.clip((phi + 1) / 2.0, 0.0, 1.0)
+    # Linear interpolation: rho = (1 - w) * rho2 + w * rho1
+    # where w = phi_mapped is the air fraction
+    return (1 - phi_mapped) * rho2 + phi_mapped * rho1
 
 
 def calculate_reynolds_number(phi, Re1, Re2):
-    """Calculate the Reynolds number based on the phase field.
+    """Calculate Reynolds number based on phase field.
     
     Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-        Re1 (float): Reynolds number for phase 1.
-        Re2 (float): Reynolds number for phase 2.
-    
-    Returns:
-        np.ndarray: Calculated Reynolds number (shape: (Nx, Ny)).
+        phi: Phase field. phi=-1: liquid (Re2), phi=+1: air (Re1)
+        Re1: Reynolds number for air (phase 1).
+        Re2: Reynolds number for liquid (phase 2).
     """
-    phi_mapped = (phi + 1) / 2.0
-    Re = 1 / ((1 + phi_mapped) / (2 * Re2) + (1 - phi_mapped) / (2 * Re1))
-    return Re
+    phi_mapped = np.clip((phi + 1) / 2.0, 0.0, 1.0)
+    # Harmonic mean interpolation: Re = 1 / ((1-w)/Re2 + w/Re1)
+    # where w = phi_mapped is air fraction
+    # phi_mapped = 0 (liquid): Re = Re2
+    # phi_mapped = 1 (air): Re = Re1
+    return 1 / ((1 - phi_mapped) / Re2 + phi_mapped / Re1)
 
 
 @jit
 def jax_calculate_reynolds_number(phi, Re1, Re2):
-    """JAX-compiled version of Reynolds number calculation.
+    """JAX version of Reynolds number calculation.
     
     Args:
-        phi (jnp.ndarray): Phase field (shape: (Nx, Ny)).
-        Re1 (float): Reynolds number for phase 1.
-        Re2 (float): Reynolds number for phase 2.
-    
-    Returns:
-        jnp.ndarray: Calculated Reynolds number (shape: (Nx, Ny)).
+        phi: Phase field. phi=-1: liquid (Re2), phi=+1: air (Re1)
+        Re1: Reynolds number for air (phase 1).
+        Re2: Reynolds number for liquid (phase 2).
     """
-    phi_mapped = (phi + 1) / 2.0
-    Re = 1 / ((1 + phi_mapped) / (2 * Re2) + (1 - phi_mapped) / (2 * Re1))
-    return Re
+    phi_mapped = jnp.clip((phi + 1) / 2.0, 0.0, 1.0)
+    # Harmonic mean interpolation: Re = 1 / ((1-w)/Re2 + w/Re1)
+    # where w = phi_mapped is air fraction
+    return 1 / ((1 - phi_mapped) / Re2 + phi_mapped / Re1)
 
 
 def calculate_weber_number(phi, We1, We2):
-    """Calculate the Weber number based on the phase field.
+    """Calculate Weber number based on phase field.
     
     Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-        We1 (float): Weber number for phase 1.
-        We2 (float): Weber number for phase 2.
-    
-    Returns:
-        np.ndarray: Calculated Weber number (shape: (Nx, Ny)).
+        phi: Phase field. phi=-1: liquid (We2), phi=+1: air (We1)
+        We1: Weber number for air (phase 1).
+        We2: Weber number for liquid (phase 2).
     """
-    phi_mapped = (phi + 1) / 2.0
-    We = 1 / ((1 + phi_mapped) / (2 * We2) + (1 - phi_mapped) / (2 * We1))
-    return We
+    phi_mapped = np.clip((phi + 1) / 2.0, 0.0, 1.0)
+    # Harmonic mean interpolation: We = 1 / ((1-w)/We2 + w/We1)
+    # where w = phi_mapped is air fraction
+    # phi_mapped = 0 (liquid): We = We2
+    # phi_mapped = 1 (air): We = We1
+    return 1 / ((1 - phi_mapped) / We2 + phi_mapped / We1)
 
 
 @jit
 def jax_calculate_weber_number(phi, We1, We2):
-    """JAX-compiled version of Weber number calculation.
+    """JAX version of Weber number calculation.
     
     Args:
-        phi (jnp.ndarray): Phase field (shape: (Nx, Ny)).
-        We1 (float): Weber number for phase 1.
-        We2 (float): Weber number for phase 2.
-    
-    Returns:
-        jnp.ndarray: Calculated Weber number (shape: (Nx, Ny)).
+        phi: Phase field. phi=-1: liquid (We2), phi=+1: air (We1)
+        We1: Weber number for air (phase 1).
+        We2: Weber number for liquid (phase 2).
     """
-    phi_mapped = (phi + 1) / 2.0
-    We = 1 / ((1 + phi_mapped) / (2 * We2) + (1 - phi_mapped) / (2 * We1))
-    return We
-
-
-def f_1(phi):
-    """Double-well potential function with minimas at phi = 0 and phi = 1.
-    
-    Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-    
-    Returns:
-        np.ndarray: Value of the double-well potential (shape: (Nx, Ny)).
-    """
-    return phi**2 * (1 - phi)**2
-
-
-def f_2(phi):
-    """Double-well potential function with minimas at phi = -1 and phi = 1.
-    
-    Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-    
-    Returns:
-        np.ndarray: Value of the double-well potential (shape: (Nx, Ny)).
-    """
-    return 1./4 * (phi**2 - 1)**2
-
-
-def df_1(phi):
-    """Derivative of the double-well potential function.
-    
-    Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-    
-    Returns:
-        np.ndarray: Derivative of the double-well potential (shape: (Nx, Ny)).
-    """
-    return 2 * phi * (1 - phi) * (1 - 2 * phi)
+    phi_mapped = jnp.clip((phi + 1) / 2.0, 0.0, 1.0)
+    # Harmonic mean interpolation: We = 1 / ((1-w)/We2 + w/We1)
+    # where w = phi_mapped is air fraction
+    return 1 / ((1 - phi_mapped) / We2 + phi_mapped / We1)
 
 
 def df_2(phi):
-    """Derivative of the double-well potential function.
-    
-    Args:
-        phi (np.ndarray): Phase field (shape: (Nx, Ny)).
-    
-    Returns:
-        np.ndarray: Derivative of the double-well potential (shape: (Nx, Ny)).
-    """
+    """Derivative of double-well potential f(phi) = (1/4)(phi^2 - 1)^2."""
     return phi * (phi**2 - 1)
-
-
-@jit
-def jax_f_1(phi):
-    """JAX-compiled version of f_1."""
-    return phi**2 * (1 - phi)**2
-
-
-@jit
-def jax_f_2(phi):
-    """JAX-compiled version of f_2."""
-    return 1./4 * (phi**2 - 1)**2
-
-
-@jit
-def jax_df_1(phi):
-    """JAX-compiled version of df_1."""
-    return 2 * phi * (1 - phi) * (1 - 2 * phi)
 
 
 @jit
 def jax_df_2(phi):
-    """JAX-compiled version of df_2."""
+    """JAX version of df_2."""
     return phi * (phi**2 - 1)
+
+
+@jit
+def jax_advection_function(psi, threshold=0.1):
+    """Advection function A(ψ) for ice-water phase field.
+    
+    A(ψ) = 0.5 * (1 - tanh(ψ / threshold))
+    - A ≈ 1 in liquid (ψ < 0): full advection
+    - A ≈ 0 in ice (ψ > 0): no advection (solid)
+    
+    Args:
+        psi: Ice phase field (-1=water, +1=ice).
+        threshold: Transition width (default: 0.1).
+    
+    Returns:
+        Advection coefficient field (0 to 1).
+    """
+    return 0.5 * (1.0 - jnp.tanh(psi / threshold))
