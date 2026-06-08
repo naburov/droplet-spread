@@ -608,9 +608,9 @@ class BaseSimulation(ABC):
         """Save checkpoint."""
         solver_params = self.config.get("solver_params", {})
         if solver_params.get("chainsaw_diagnostics", False):
-            from diagnostics.chainsaw_step_diagnostics import append_chainsaw_diagnostics_csv
-            from diagnostics.ghost_row_diagnostics import append_ghost_row_instep_csv
-            from diagnostics.phase_update_stage_diagnostics import append_phase_stage_rows
+            from runtime_diagnostics.chainsaw_step_diagnostics import append_chainsaw_diagnostics_csv
+            from runtime_diagnostics.ghost_row_diagnostics import append_ghost_row_instep_csv
+            from runtime_diagnostics.phase_update_stage_diagnostics import append_phase_stage_rows
 
             append_ghost_row_instep_csv(
                 self.state.phase_solver,

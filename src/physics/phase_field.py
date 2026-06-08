@@ -503,7 +503,7 @@ class BasePhaseFieldSolver:
             self._phase_debug_copy_wall_from_row1_after_solve = bool(
                 phase_debug.get("copy_wall_from_row1_after_solve", False)
             )
-            from diagnostics.semi_implicit_contact_split import normalize_split_mode
+            from runtime_diagnostics.semi_implicit_contact_split import normalize_split_mode
 
             split_cfg = solver_cfg.get("semi_implicit_contact_split")
             if split_cfg is None:
@@ -599,7 +599,7 @@ class BasePhaseFieldSolver:
     def _record_bottom_ghost_instep(self, bottom_ghost_phi, phi):
         if not getattr(self, "record_ghost_row_instep", False):
             return
-        from diagnostics.ghost_row_diagnostics import record_bottom_ghost_instep
+        from runtime_diagnostics.ghost_row_diagnostics import record_bottom_ghost_instep
 
         record_bottom_ghost_instep(self, bottom_ghost_phi, phi)
 
@@ -610,7 +610,7 @@ class BasePhaseFieldSolver:
     def _phase_stage(self, name: str, phi, extra=None) -> None:
         if not getattr(self, "record_phase_stage_diagnostics", False):
             return
-        from diagnostics.phase_update_stage_diagnostics import (
+        from runtime_diagnostics.phase_update_stage_diagnostics import (
             wall_alt_contact_stats,
             wall_alt_stats,
         )
@@ -622,7 +622,7 @@ class BasePhaseFieldSolver:
     def _phase_stage_ghost(self, name: str, bottom_ghost_phi, phi) -> None:
         if not getattr(self, "record_phase_stage_diagnostics", False):
             return
-        from diagnostics.phase_update_stage_diagnostics import diag_ghost_stats
+        from runtime_diagnostics.phase_update_stage_diagnostics import diag_ghost_stats
 
         self._phase_stage_rows.append(diag_ghost_stats(name, bottom_ghost_phi, phi))
 
@@ -730,7 +730,7 @@ class BasePhaseFieldSolver:
         split = self.semi_implicit_contact_split
 
         if split == "filtered_delta":
-            from diagnostics.semi_implicit_contact_split import lowpass_x_bottom_strip
+            from runtime_diagnostics.semi_implicit_contact_split import lowpass_x_bottom_strip
 
             contact_delta = lowpass_x_bottom_strip(
                 contact_delta,
@@ -742,7 +742,7 @@ class BasePhaseFieldSolver:
             contact_delta, dx, dy, geometry
         )
         if split == "damped_delta":
-            from diagnostics.semi_implicit_contact_split import damp_bottom_rows
+            from runtime_diagnostics.semi_implicit_contact_split import damp_bottom_rows
 
             contact_delta_term = damp_bottom_rows(
                 contact_delta_term, self.semi_implicit_contact_delta_beta, n_rows=2

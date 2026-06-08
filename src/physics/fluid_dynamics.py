@@ -148,7 +148,7 @@ class FluidDynamicsSolver:
         self.Re2 = Re2
         self.Fr = Fr
         self.g = g
-        from diagnostics.viscous_form import normalize_mu_convention, normalize_viscous_form
+        from runtime_diagnostics.viscous_form import normalize_mu_convention, normalize_viscous_form
 
         solver_params = (config or {}).get("solver_params", {})
         self.viscous_form = normalize_viscous_form(solver_params.get("viscous_form"))
