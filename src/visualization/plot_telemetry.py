@@ -188,8 +188,18 @@ def plot_statistics(statistics_file, output_dir, baseline_df=None):
     
     # Plot 9: Divergence
     ax = axes[2, 2]
-    ax.semilogy(df['time'], df['divergence_max'], label='Max', alpha=0.7, color='red', linewidth=1.5)
-    ax.semilogy(df['time'], df['divergence_mean'], label='Mean', alpha=0.7, color='blue', linewidth=1.5)
+    ax.semilogy(df['time'], df['divergence_max'], label='Global max', alpha=0.45, color='red', linewidth=1.2)
+    ax.semilogy(df['time'], df['divergence_mean'], label='Global mean', alpha=0.45, color='blue', linewidth=1.2)
+    if 'divergence_max_interior' in df.columns:
+        ax.semilogy(
+            df['time'], df['divergence_max_interior'],
+            label='Interior max', alpha=0.9, color='darkred', linewidth=1.7
+        )
+    if 'divergence_mean_interior' in df.columns:
+        ax.semilogy(
+            df['time'], df['divergence_mean_interior'],
+            label='Interior mean', alpha=0.9, color='navy', linewidth=1.7
+        )
     if baseline_aligned is not None and 'divergence_mean_baseline' in baseline_aligned.columns:
         ax.semilogy(df['time'], baseline_aligned['divergence_mean_baseline'], 
                    label='Baseline (mean)', linestyle='--', alpha=0.6, linewidth=1.5, color='gray')

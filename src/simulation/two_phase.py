@@ -23,6 +23,8 @@ class TwoPhaseSimulation(BaseSimulation):
         # Initialize step tracking variables
         self._last_max_div = 0.0
         self._last_mean_div = 0.0
+        self._last_max_div_interior = 0.0
+        self._last_mean_div_interior = 0.0
         self._last_curvature_max = 0.0
         self._last_curvature_mean = 0.0
         self._last_ppe_info = {
@@ -226,12 +228,27 @@ class TwoPhaseSimulation(BaseSimulation):
             abs_div = jnp.abs(div_face)
             max_div = float(jnp.max(abs_div))
             mean_div = float(jnp.mean(abs_div))
+            if abs_div.shape[0] > 2 and abs_div.shape[1] > 2:
+                interior = abs_div[1:-1, 1:-1]
+                max_div_interior = float(jnp.max(interior))
+                mean_div_interior = float(jnp.mean(interior))
+            else:
+                max_div_interior = max_div
+                mean_div_interior = mean_div
             self._last_ppe_info['div_after_max'] = float(max_div)
             self._last_ppe_info['div_after_mean'] = float(mean_div)
+            self._last_ppe_info['div_after_max_interior'] = float(max_div_interior)
+            self._last_ppe_info['div_after_mean_interior'] = float(mean_div_interior)
         
         # Store for telemetry
         self._last_max_div = float(max_div)
         self._last_mean_div = float(mean_div)
+        self._last_max_div_interior = float(
+            self._last_ppe_info.get('div_after_max_interior', max_div)
+        )
+        self._last_mean_div_interior = float(
+            self._last_ppe_info.get('div_after_mean_interior', mean_div)
+        )
     
     def _phase_update(self):
         """Update phase field."""

@@ -59,6 +59,7 @@ class TelemetryLogger:
             'droplet_mass',
             'droplet_start', 'droplet_end', 'droplet_bottom', 'droplet_top',
             'divergence_max', 'divergence_mean',
+            'divergence_max_interior', 'divergence_mean_interior',
             'contact_left_index', 'contact_right_index',
             'cl_sf_norm_mean', 'cl_pg_norm_mean', 'cl_pg_dyn_norm_mean', 'cl_pg_hydro_norm_mean',
             'cl_g_norm', 'cl_sf_to_g_ratio', 'cl_sf_to_pg_dyn_ratio',
@@ -195,7 +196,8 @@ class TelemetryLogger:
                       psi=None, T=None, geometry=None, dx=None,
                       droplet_bottom=None, droplet_top=None,
                       curvature_max=None, curvature_mean=None,
-                      contact_line_forces=None):
+                      contact_line_forces=None,
+                      max_div_interior=None, mean_div_interior=None):
         """Log general statistics. geometry: from state (optional, for terrain stats)."""
         # Convert to NumPy if needed
         phi = self._convert_to_numpy(phi)
@@ -245,6 +247,8 @@ class TelemetryLogger:
             float(droplet_bottom) if droplet_bottom is not None else 0.0,
             float(droplet_top) if droplet_top is not None else 0.0,
             float(max_div), float(mean_div),
+            float(max_div_interior) if max_div_interior is not None else float(max_div),
+            float(mean_div_interior) if mean_div_interior is not None else float(mean_div),
             float((contact_line_forces or {}).get('left_index', -1.0)),
             float((contact_line_forces or {}).get('right_index', -1.0)),
             float((contact_line_forces or {}).get('sf_norm_mean', 0.0)),

@@ -321,6 +321,8 @@ class BaseSimulation(ABC):
             droplet_top=top_of_droplet,
             max_div=self._last_max_div,
             mean_div=self._last_mean_div,
+            max_div_interior=getattr(self, "_last_max_div_interior", self._last_max_div),
+            mean_div_interior=getattr(self, "_last_mean_div_interior", self._last_mean_div),
             psi=self.state.psi if self.include_ice_water else None,
             T=self.state.T if self.include_ice_water else None,
             geometry=self.state.geometry,
