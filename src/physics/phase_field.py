@@ -70,6 +70,44 @@ def jax_phase_convective_term(phi, U, dx, dy, f_1_grid):
 
 
 @jit
+def jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid):
+    """Finite-volume MAC advection div(phi * u_contravariant).
+
+    In terrain-following coordinates y = eta + h(x), J=1 and the conservative
+    scalar transport fluxes are
+        F_x   = phi * u
+        F_eta = phi * (v - h'(x) u)
+    where u,v are physical velocity components.  For flat grids this reduces to
+    the standard MAC divergence of upwinded scalar fluxes.
+    """
+    nx, ny = phi.shape
+
+    phi_w = jnp.concatenate([phi[0:1, :], phi], axis=0)
+    phi_e = jnp.concatenate([phi, phi[-1:, :]], axis=0)
+    phi_x_face = jnp.where(u_face >= 0.0, phi_w, phi_e)
+    flux_x = u_face * phi_x_face
+
+    u_center = 0.5 * (u_face[1:, :] + u_face[:-1, :])
+    u_y_face = jnp.zeros((nx, ny + 1), dtype=phi.dtype)
+    u_y_face = u_y_face.at[:, 1:ny].set(0.5 * (u_center[:, 1:] + u_center[:, :-1]))
+    u_y_face = u_y_face.at[:, 0].set(u_center[:, 0])
+    u_y_face = u_y_face.at[:, ny].set(u_center[:, -1])
+
+    f1_y_face = jnp.zeros((nx, ny + 1), dtype=phi.dtype)
+    f1_y_face = f1_y_face.at[:, 1:ny].set(0.5 * (f_1_grid[:, 1:] + f_1_grid[:, :-1]))
+    f1_y_face = f1_y_face.at[:, 0].set(f_1_grid[:, 0])
+    f1_y_face = f1_y_face.at[:, ny].set(f_1_grid[:, -1])
+
+    w_face = v_face - f1_y_face * u_y_face
+    phi_s = jnp.concatenate([phi[:, 0:1], phi], axis=1)
+    phi_n = jnp.concatenate([phi, phi[:, -1:]], axis=1)
+    phi_y_face = jnp.where(w_face >= 0.0, phi_s, phi_n)
+    flux_y = w_face * phi_y_face
+
+    return (flux_x[1:, :] - flux_x[:-1, :]) / dx + (flux_y[:, 1:] - flux_y[:, :-1]) / dy
+
+
+@jit
 def jax_degenerate_mobility(phi, mobility_clip=0.0, mobility_blend=0.0):
     """Quasi-degenerate CH mobility with optional constant-mobility blending.
 
@@ -297,7 +335,8 @@ def jax_update_phase(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angle, f_1
                      mu_left_bc=BC_NEUMANN, mu_right_bc=BC_NEUMANN,
                      mu_top_value=0.0, mu_bottom_value=0.0,
                      mu_left_value=0.0, mu_right_value=0.0,
-                     use_degenerate_mobility=False, degenerate_mobility_clip=0.0, degenerate_mobility_blend=0.0):
+                     use_degenerate_mobility=False, degenerate_mobility_clip=0.0, degenerate_mobility_blend=0.0,
+                     u_face=None, v_face=None):
     """JAX-compiled phase field update with optional Willmore regularization.
     
     Implements the Cahn-Hilliard-Willmore equation:
@@ -327,6 +366,8 @@ def jax_update_phase(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angle, f_1
         Updated phase field.
     """
     convective_term = jax_phase_convective_term(phi, U, dx, dy, f_1_grid)
+    if u_face is not None and v_face is not None:
+        convective_term = jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid)
     diffusive_term = jax_phase_diffusive_term_simple(
         phi, dx, dy, Pe, epsilon, f_1_grid, f_2_grid,
         lambda_willmore=lambda_willmore,
@@ -354,13 +395,16 @@ def jax_update_phase_ghost(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angl
                            mu_left_bc=BC_NEUMANN, mu_right_bc=BC_NEUMANN,
                            mu_top_value=0.0, mu_bottom_value=0.0,
                            mu_left_value=0.0, mu_right_value=0.0,
-                           use_degenerate_mobility=False, degenerate_mobility_clip=0.0, degenerate_mobility_blend=0.0):
+                           use_degenerate_mobility=False, degenerate_mobility_clip=0.0, degenerate_mobility_blend=0.0,
+                           u_face=None, v_face=None):
     """Phase update with a bottom ghost cell for the wetting BC."""
     if f_1_grid is None:
         f_1_grid = jnp.zeros_like(phi)
     if f_2_grid is None:
         f_2_grid = jnp.zeros_like(phi)
     convective_term = jax_phase_convective_term(phi, U, dx, dy, f_1_grid)
+    if u_face is not None and v_face is not None:
+        convective_term = jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid)
     diffusive_term = jax_phase_diffusive_term_ghost(
         phi, dx, dy, Pe, epsilon, bottom_ghost_phi, f_1_grid, f_2_grid,
         lambda_willmore=lambda_willmore,
@@ -429,6 +473,61 @@ class BasePhaseFieldSolver:
             self.degenerate_mobility_blend = float(solver_cfg.get("degenerate_mobility_blend", 0.0))
             self.degenerate_mobility_imex = bool(solver_cfg.get("degenerate_mobility_imex", True))
             self.degenerate_mobility_imex_mref = float(solver_cfg.get("degenerate_mobility_imex_mref", 1.0))
+            self.record_ghost_row_instep = bool(
+                solver_cfg.get(
+                    "ghost_row_diagnostics",
+                    solver_cfg.get("chainsaw_diagnostics", False),
+                )
+            )
+            self.record_phase_stage_diagnostics = bool(
+                solver_cfg.get(
+                    "phase_stage_diagnostics",
+                    solver_cfg.get("chainsaw_diagnostics", False),
+                )
+            )
+            phase_debug = solver_cfg.get("phase_debug", {}) or {}
+            self._phase_debug_zero_advection = bool(phase_debug.get("zero_phase_advection", False))
+            self._phase_debug_skip_ch_diffusion = bool(phase_debug.get("skip_ch_diffusion", False))
+            self._phase_debug_freeze_wall_after_solve = bool(
+                phase_debug.get("freeze_wall_after_solve", False)
+            )
+            self._phase_debug_freeze_wall_after_advection = bool(
+                phase_debug.get("freeze_wall_after_advection", False)
+            )
+            self._phase_debug_freeze_wall_after_phase_bcs = bool(
+                phase_debug.get("freeze_wall_after_phase_bcs", False)
+            )
+            self._phase_debug_freeze_wall_after_preserve = bool(
+                phase_debug.get("freeze_wall_after_preserve", False)
+            )
+            self._phase_debug_copy_wall_from_row1_after_solve = bool(
+                phase_debug.get("copy_wall_from_row1_after_solve", False)
+            )
+            from diagnostics.semi_implicit_contact_split import normalize_split_mode
+
+            split_cfg = solver_cfg.get("semi_implicit_contact_split")
+            if split_cfg is None:
+                pf_bc = config.get("boundary_conditions", {}).get("phase_field", {})
+                ghost_law = str(pf_bc.get("contact_angle_ghost_law", "analytic_gradient"))
+                if (
+                    solver_cfg.get("phase_update_mode") == "semi_implicit_ch"
+                    and str(solver_cfg.get("phase_field_solver", "")).lower() == "ghost_cell"
+                    and ghost_law == "analytic_gradient"
+                ):
+                    # IMEX split: sparse A_phi does not match explicit contact_delta_term.
+                    split_cfg = "no_delta"
+                else:
+                    split_cfg = "explicit_delta"
+            self.semi_implicit_contact_split = normalize_split_mode(split_cfg)
+            self.semi_implicit_contact_delta_beta = float(
+                solver_cfg.get("semi_implicit_contact_delta_beta", 0.5)
+            )
+            self.semi_implicit_contact_filter_passes = int(
+                solver_cfg.get("semi_implicit_contact_filter_passes", 1)
+            )
+            self.semi_implicit_contact_filter_strip_rows = int(
+                solver_cfg.get("semi_implicit_contact_filter_strip_rows", 3)
+            )
         else:
             self.bc_manager = None
             self.chemical_potential_bc_manager = None
@@ -444,8 +543,23 @@ class BasePhaseFieldSolver:
             self.degenerate_mobility_blend = 0.0
             self.degenerate_mobility_imex = True
             self.degenerate_mobility_imex_mref = 1.0
+            self.record_ghost_row_instep = False
+            self.record_phase_stage_diagnostics = False
+            self._phase_debug_zero_advection = False
+            self._phase_debug_skip_ch_diffusion = False
+            self._phase_debug_freeze_wall_after_solve = False
+            self._phase_debug_freeze_wall_after_advection = False
+            self._phase_debug_freeze_wall_after_phase_bcs = False
+            self._phase_debug_freeze_wall_after_preserve = False
+            self._phase_debug_copy_wall_from_row1_after_solve = False
+            self.semi_implicit_contact_split = "explicit_delta"
+            self.semi_implicit_contact_delta_beta = 0.5
+            self.semi_implicit_contact_filter_passes = 1
+            self.semi_implicit_contact_filter_strip_rows = 3
 
         self._phase_laplacian_cache = None
+        self._last_ghost_row_instep = None
+        self._phase_stage_rows: list[dict] = []
         self._phase_conservative_outer_cache = None
         self._phase_helmholtz_cache = {}
     
@@ -481,6 +595,162 @@ class BasePhaseFieldSolver:
                 phi_new, dx, dy, use_jax=True, psi=psi, U=U, geometry=geometry
             )
         return phi_new
+
+    def _record_bottom_ghost_instep(self, bottom_ghost_phi, phi):
+        if not getattr(self, "record_ghost_row_instep", False):
+            return
+        from diagnostics.ghost_row_diagnostics import record_bottom_ghost_instep
+
+        record_bottom_ghost_instep(self, bottom_ghost_phi, phi)
+
+    def _phase_stage_reset(self) -> None:
+        if getattr(self, "record_phase_stage_diagnostics", False):
+            self._phase_stage_rows = []
+
+    def _phase_stage(self, name: str, phi, extra=None) -> None:
+        if not getattr(self, "record_phase_stage_diagnostics", False):
+            return
+        from diagnostics.phase_update_stage_diagnostics import (
+            wall_alt_contact_stats,
+            wall_alt_stats,
+        )
+
+        row = wall_alt_stats(name, phi, extra=extra)
+        row.update(wall_alt_contact_stats(name, phi))
+        self._phase_stage_rows.append(row)
+
+    def _phase_stage_ghost(self, name: str, bottom_ghost_phi, phi) -> None:
+        if not getattr(self, "record_phase_stage_diagnostics", False):
+            return
+        from diagnostics.phase_update_stage_diagnostics import diag_ghost_stats
+
+        self._phase_stage_rows.append(diag_ghost_stats(name, bottom_ghost_phi, phi))
+
+    def _freeze_wall_row_numpy(self, phi_new_np, phi_np) -> None:
+        phi_new_np[:, 0] = phi_np[:, 0]
+
+    def _explicit_ghost_phase_step(
+        self, phi, U, current_dt, dx, dy, geometry, psi=None, *, skip_bottom_advection: bool,
+        u_face=None, v_face=None
+    ):
+        """Fully explicit ghost-cell CH update (bypasses semi-implicit Helmholtz)."""
+        bottom_velocity_bc = self.config.get("boundary_conditions", {}).get("velocity", {}).get(
+            "bottom", "no_slip"
+        )
+        U_phase = jnp.zeros_like(U) if self._phase_debug_zero_advection else U
+        bottom_ghost_phi = self.bc_manager.contact_angle_bc.build_bottom_ghost_row_jax(
+            phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
+        )
+        self._record_bottom_ghost_instep(bottom_ghost_phi, phi)
+        self._phase_stage("01_after_build_bottom_ghost_input_phi", phi)
+        self._phase_stage_ghost("01_bottom_ghost", bottom_ghost_phi, phi)
+        phi_new = jax_update_phase_ghost(
+            phi,
+            U_phase,
+            current_dt,
+            dx,
+            dy,
+            self.Pe,
+            self.epsilon,
+            self.contact_angle,
+            bottom_ghost_phi,
+            geometry.f_1_grid,
+            geometry.f_2_grid,
+            lambda_willmore=self.lambda_willmore,
+            epsilon_willmore=self.epsilon_willmore,
+            mu_top_bc=self.mu_bc_codes[0],
+            mu_bottom_bc=self.mu_bc_codes[1],
+            mu_left_bc=self.mu_bc_codes[2],
+            mu_right_bc=self.mu_bc_codes[3],
+            mu_top_value=self.mu_bc_values[0],
+            mu_bottom_value=self.mu_bc_values[1],
+            mu_left_value=self.mu_bc_values[2],
+            mu_right_value=self.mu_bc_values[3],
+            use_degenerate_mobility=self.use_degenerate_mobility,
+            degenerate_mobility_clip=self.degenerate_mobility_clip,
+            degenerate_mobility_blend=self.degenerate_mobility_blend,
+            u_face=u_face,
+            v_face=v_face,
+        )
+        self._phase_stage("03_after_explicit_update", phi_new)
+        phi_new = self._apply_advection_bcs(
+            phi_new, U, current_dt, dx, dy, geometry, skip_bottom=skip_bottom_advection
+        )
+        self._phase_stage("05_after_advection_bcs", phi_new)
+        phi_new = self._apply_phase_bcs_only(phi_new, dx, dy, geometry, psi=psi, U=U)
+        self._phase_stage("06_after_phase_bcs", phi_new)
+        phi_new = self._preserve_phase_sum_if_requested(phi, phi_new)
+        self._phase_stage("07_after_preserve_phase_sum", phi_new)
+        return phi_new
+
+    def _build_semi_implicit_bottom_operators(
+        self, phi, dx, dy, geometry, psi, U, bottom_velocity_bc, A
+    ):
+        """Return (A_phi, contact_laplacian_old, bottom_ghost_phi) for bottom ghost-cell CH."""
+        split = self.semi_implicit_contact_split
+        ca_bc = self.bc_manager.contact_angle_bc
+        use_wall_energy = (
+            split == "implicit_wall_energy" or ca_bc.contact_angle_ghost_law_code == 1
+        )
+
+        bottom_ghost_phi = ca_bc.build_bottom_ghost_row_jax(
+            phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
+        )
+        self._record_bottom_ghost_instep(bottom_ghost_phi, phi)
+        self._phase_stage("01_after_build_bottom_ghost_input_phi", phi)
+        self._phase_stage_ghost("01_bottom_ghost", bottom_ghost_phi, phi)
+
+        contact_laplacian_old = None
+        if use_wall_energy:
+            bottom_q_prime = np.asarray(
+                ca_bc.build_bottom_wall_energy_q_prime_jax(
+                    phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
+                )
+            )
+            A_phi = self._phase_laplacian_with_wall_energy_bottom(A, bottom_q_prime, dy)
+        elif split == "no_delta":
+            A_phi = A
+        else:
+            contact_laplacian_old = np.asarray(
+                jax_laplacian_terrain_bottom_ghost(
+                    phi, dx, dy, geometry.f_1_grid, geometry.f_2_grid, bottom_ghost_phi
+                )
+            )
+            A_phi = A
+        return A_phi, contact_laplacian_old, bottom_ghost_phi
+
+    def _apply_contact_delta_to_rhs(
+        self, phi_np, rhs, A_phi, contact_laplacian_old, current_dt, dx, dy, geometry
+    ):
+        if contact_laplacian_old is None:
+            return rhs, None, None
+
+        base_laplacian_old = self._apply_sparse_operator(A_phi, phi_np)
+        contact_delta = contact_laplacian_old - base_laplacian_old
+        split = self.semi_implicit_contact_split
+
+        if split == "filtered_delta":
+            from diagnostics.semi_implicit_contact_split import lowpass_x_bottom_strip
+
+            contact_delta = lowpass_x_bottom_strip(
+                contact_delta,
+                strip_rows=self.semi_implicit_contact_filter_strip_rows,
+                passes=self.semi_implicit_contact_filter_passes,
+            )
+
+        contact_delta_term = self._apply_conservative_outer_operator(
+            contact_delta, dx, dy, geometry
+        )
+        if split == "damped_delta":
+            from diagnostics.semi_implicit_contact_split import damp_bottom_rows
+
+            contact_delta_term = damp_bottom_rows(
+                contact_delta_term, self.semi_implicit_contact_delta_beta, n_rows=2
+            )
+
+        ch_scale = current_dt * (self.epsilon ** 2 / self.Pe)
+        rhs = rhs - ch_scale * contact_delta_term
+        return rhs, contact_delta, contact_delta_term
 
     def _preserve_phase_sum_if_requested(self, phi_old, phi_new):
         if self.bc_manager is None:
@@ -665,7 +935,22 @@ class BasePhaseFieldSolver:
             sol = np.nan_to_num(rhs_flat, nan=0.0, posinf=0.0, neginf=0.0)
         return sol.reshape(rhs_t.shape).T
 
-    def _semi_implicit_ch_step(self, phi, U, current_dt, dx, dy, geometry, psi=None, skip_bottom=False):
+    def _semi_implicit_ch_step(
+        self, phi, U, current_dt, dx, dy, geometry, psi=None, skip_bottom=False,
+        u_face=None, v_face=None
+    ):
+        self._phase_stage_reset()
+        self._phase_stage("00_input_phi", phi)
+
+        if skip_bottom and self.semi_implicit_contact_split == "explicit_ghost":
+            skip_bottom_adv = bool(skip_bottom or self._should_skip_bottom_advection_bc())
+            return self._explicit_ghost_phase_step(
+                phi, U, current_dt, dx, dy, geometry, psi=psi,
+                skip_bottom_advection=skip_bottom_adv, u_face=u_face, v_face=v_face
+            )
+
+        U_phase = jnp.zeros_like(U) if self._phase_debug_zero_advection else U
+
         # Keep a compatibility fallback to the legacy explicit variable-mobility path.
         if self.use_degenerate_mobility and not self.degenerate_mobility_imex:
             if skip_bottom:
@@ -673,8 +958,9 @@ class BasePhaseFieldSolver:
                 bottom_ghost_phi = self.bc_manager.contact_angle_bc.build_bottom_ghost_row_jax(
                     phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
                 )
+                self._record_bottom_ghost_instep(bottom_ghost_phi, phi)
                 phi_new = jax_update_phase_ghost(
-                    phi, U, current_dt, dx, dy,
+                    phi, U_phase, current_dt, dx, dy,
                     self.Pe, self.epsilon, self.contact_angle,
                     bottom_ghost_phi,
                     geometry.f_1_grid, geometry.f_2_grid,
@@ -691,10 +977,12 @@ class BasePhaseFieldSolver:
                     use_degenerate_mobility=True,
                     degenerate_mobility_clip=self.degenerate_mobility_clip,
                     degenerate_mobility_blend=self.degenerate_mobility_blend,
+                    u_face=u_face,
+                    v_face=v_face,
                 )
             else:
                 phi_new = jax_update_phase(
-                    phi, U, current_dt, dx, dy,
+                    phi, U_phase, current_dt, dx, dy,
                     self.Pe, self.epsilon, self.contact_angle,
                     geometry.f_1_grid, geometry.f_2_grid,
                     lambda_willmore=self.lambda_willmore,
@@ -710,6 +998,8 @@ class BasePhaseFieldSolver:
                     use_degenerate_mobility=True,
                     degenerate_mobility_clip=self.degenerate_mobility_clip,
                     degenerate_mobility_blend=self.degenerate_mobility_blend,
+                    u_face=u_face,
+                    v_face=v_face,
                 )
             skip_bottom = bool(skip_bottom or self._should_skip_bottom_advection_bc())
             phi_new = self._apply_advection_bcs(phi_new, U, current_dt, dx, dy, geometry, skip_bottom=skip_bottom)
@@ -718,9 +1008,20 @@ class BasePhaseFieldSolver:
             return phi_new
 
         phi_np = np.asarray(phi)
-        convective_term = np.asarray(
-            jax_phase_convective_term(phi, U, dx, dy, geometry.f_1_grid)
-        )
+        if self._phase_debug_zero_advection:
+            convective_term = np.zeros_like(phi_np)
+        else:
+            if u_face is not None and v_face is not None:
+                convective_term = np.asarray(
+                    jax_phase_conservative_advection(
+                        phi, u_face, v_face, dx, dy, geometry.f_1_grid
+                    )
+                )
+            else:
+                convective_term = np.asarray(
+                    jax_phase_convective_term(phi, U_phase, dx, dy, geometry.f_1_grid)
+                )
+        self._phase_stage("op_convective_term", convective_term)
         nx, ny = phi_np.shape
         A = self._get_phase_laplacian_matrix(nx, ny, dx, dy, geometry=geometry)
         C = self._get_conservative_outer_matrix(nx, ny, dx, dy, geometry)
@@ -729,22 +1030,9 @@ class BasePhaseFieldSolver:
         bottom_ghost_phi = None
         contact_laplacian_old = None
         if skip_bottom:
-            bottom_ghost_phi = self.bc_manager.contact_angle_bc.build_bottom_ghost_row_jax(
-                phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
+            A_phi, contact_laplacian_old, bottom_ghost_phi = self._build_semi_implicit_bottom_operators(
+                phi, dx, dy, geometry, psi, U, bottom_velocity_bc, A
             )
-            if getattr(self.bc_manager.contact_angle_bc, "contact_angle_ghost_law_code", 0) == 1:
-                bottom_q_prime = np.asarray(
-                    self.bc_manager.contact_angle_bc.build_bottom_wall_energy_q_prime_jax(
-                        phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
-                    )
-                )
-                A_phi = self._phase_laplacian_with_wall_energy_bottom(A, bottom_q_prime, dy)
-            else:
-                contact_laplacian_old = np.asarray(
-                    jax_laplacian_terrain_bottom_ghost(
-                        phi, dx, dy, geometry.f_1_grid, geometry.f_2_grid, bottom_ghost_phi
-                    )
-                )
         phase_linear_operator = C @ A_phi
         mobility_ref = 1.0
         if self.use_degenerate_mobility:
@@ -809,34 +1097,76 @@ class BasePhaseFieldSolver:
                 lap2_phi_old = self._apply_sparse_operator(A, lap_phi_old)
                 rhs = rhs + current_dt * mobility_ref * (self.epsilon ** 2 / self.Pe) * lap2_phi_old
         else:
-            nonlinear_term = self._apply_conservative_outer_operator(
-                np.asarray(jax_df_2(phi)), dx, dy, geometry
-            )
-            rhs = phi_np - current_dt * convective_term + (current_dt / self.Pe) * nonlinear_term
-            if contact_laplacian_old is not None:
-                base_laplacian_old = self._apply_sparse_operator(A_phi, phi_np)
-                contact_delta = contact_laplacian_old - base_laplacian_old
-                contact_delta_term = self._apply_conservative_outer_operator(
-                    contact_delta, dx, dy, geometry
+            if self._phase_debug_skip_ch_diffusion:
+                nonlinear_term = np.zeros_like(phi_np)
+                contact_delta = None
+                contact_delta_term = None
+            else:
+                nonlinear_term = self._apply_conservative_outer_operator(
+                    np.asarray(jax_df_2(phi)), dx, dy, geometry
                 )
-                rhs = rhs - current_dt * (self.epsilon ** 2 / self.Pe) * contact_delta_term
+                contact_delta = None
+                contact_delta_term = None
+            self._phase_stage("op_nonlinear_term", nonlinear_term)
+            lap_phi_old = self._apply_sparse_operator(A_phi, phi_np)
+            self._phase_stage("op_lap_phi_old", lap_phi_old)
+            rhs = phi_np - current_dt * convective_term + (current_dt / self.Pe) * nonlinear_term
+            if (
+                not self._phase_debug_skip_ch_diffusion
+                and contact_laplacian_old is not None
+                and self.semi_implicit_contact_split != "no_delta"
+            ):
+                rhs, contact_delta, contact_delta_term = self._apply_contact_delta_to_rhs(
+                    phi_np, rhs, A_phi, contact_laplacian_old, current_dt, dx, dy, geometry
+                )
+            if contact_delta is not None:
+                self._phase_stage("op_contact_delta", contact_delta)
+            if contact_delta_term is not None:
+                self._phase_stage("op_contact_delta_term", contact_delta_term)
 
-        phi_new_np = rhs if M is None else self._solve_helmholtz_biharmonic(M, rhs, x0=phi_np)
+        self._phase_stage("02_rhs_as_field", rhs)
+        self._phase_stage("op_rhs_increment", rhs - phi_np)
+
+        phi_new_np = np.asarray(rhs if M is None else self._solve_helmholtz_biharmonic(M, rhs, x0=phi_np))
+        self._phase_stage("03_after_linear_solve", phi_new_np)
+
+        if self._phase_debug_copy_wall_from_row1_after_solve:
+            phi_new_np[:, 0] = phi_new_np[:, 1]
+        elif self._phase_debug_freeze_wall_after_solve:
+            self._freeze_wall_row_numpy(phi_new_np, phi_np)
+
         phi_new = jnp.asarray(phi_new_np, dtype=phi.dtype)
+        self._phase_stage("04_after_jnp_cast", phi_new)
+
         skip_bottom = bool(skip_bottom or self._should_skip_bottom_advection_bc())
         phi_new = self._apply_advection_bcs(phi_new, U, current_dt, dx, dy, geometry, skip_bottom=skip_bottom)
+        self._phase_stage("05_after_advection_bcs", phi_new)
+        if self._phase_debug_freeze_wall_after_advection:
+            phi_new = phi_new.at[:, 0].set(phi[:, 0])
+
         phi_new = self._apply_phase_bcs_only(phi_new, dx, dy, geometry, psi=psi, U=U)
+        self._phase_stage("06_after_phase_bcs", phi_new)
+        if self._phase_debug_freeze_wall_after_phase_bcs:
+            phi_new = phi_new.at[:, 0].set(phi[:, 0])
+
         phi_new = self._preserve_phase_sum_if_requested(phi, phi_new)
+        self._phase_stage("07_after_preserve_phase_sum", phi_new)
+        if self._phase_debug_freeze_wall_after_preserve:
+            phi_new = phi_new.at[:, 0].set(phi[:, 0])
+
         return phi_new
 
 
 class PhaseFieldSolverSimple(BasePhaseFieldSolver):
     """Legacy phase-field solver with post-update boundary enforcement."""
 
-    def update(self, phi, U, current_dt, dx, dy, geometry, use_jax=True, psi=None):
+    def update(self, phi, U, current_dt, dx, dy, geometry, use_jax=True, psi=None, u_face=None, v_face=None):
         """Update phase field using the legacy operator path."""
         if self.phase_update_mode == "semi_implicit_ch":
-            return self._semi_implicit_ch_step(phi, U, current_dt, dx, dy, geometry, psi=psi, skip_bottom=False)
+            return self._semi_implicit_ch_step(
+                phi, U, current_dt, dx, dy, geometry, psi=psi,
+                skip_bottom=False, u_face=u_face, v_face=v_face
+            )
 
         phi_new = jax_update_phase(phi, U, current_dt, dx, dy,
                                    self.Pe, self.epsilon, self.contact_angle,
@@ -853,25 +1183,37 @@ class PhaseFieldSolverSimple(BasePhaseFieldSolver):
                                    mu_right_value=self.mu_bc_values[3],
                                    use_degenerate_mobility=self.use_degenerate_mobility,
                                    degenerate_mobility_clip=self.degenerate_mobility_clip,
-                                   degenerate_mobility_blend=self.degenerate_mobility_blend)
+                                   degenerate_mobility_blend=self.degenerate_mobility_blend,
+                                   u_face=u_face,
+                                   v_face=v_face)
         return self._apply_post_update_bcs(phi_new, U, current_dt, dx, dy, geometry, psi=psi)
 
 
 class PhaseFieldSolverGhostCell(BasePhaseFieldSolver):
     """Experimental ghost-cell phase-field solver for bottom wetting BCs."""
 
-    def update(self, phi, U, current_dt, dx, dy, geometry, use_jax=True, psi=None):
+    def update(self, phi, U, current_dt, dx, dy, geometry, use_jax=True, psi=None, u_face=None, v_face=None):
         """Update phase field using the ghost-cell bottom-wall path."""
         if self.phase_update_mode == "semi_implicit_ch":
-            return self._semi_implicit_ch_step(phi, U, current_dt, dx, dy, geometry, psi=psi, skip_bottom=True)
+            return self._semi_implicit_ch_step(
+                phi, U, current_dt, dx, dy, geometry, psi=psi,
+                skip_bottom=True, u_face=u_face, v_face=v_face
+            )
 
         bottom_velocity_bc = self.config.get("boundary_conditions", {}).get("velocity", {}).get("bottom", "no_slip")
+        self._phase_stage_reset()
+        self._phase_stage("00_input_phi", phi)
+
         bottom_ghost_phi = self.bc_manager.contact_angle_bc.build_bottom_ghost_row_jax(
             phi, dx, dy, geometry, psi=psi, U=U, bottom_velocity_bc=bottom_velocity_bc
         )
+        self._record_bottom_ghost_instep(bottom_ghost_phi, phi)
+        self._phase_stage("01_after_build_bottom_ghost_input_phi", phi)
+        self._phase_stage_ghost("01_bottom_ghost", bottom_ghost_phi, phi)
 
+        U_phase = jnp.zeros_like(U) if self._phase_debug_zero_advection else U
         phi_new = jax_update_phase_ghost(
-            phi, U, current_dt, dx, dy,
+            phi, U_phase, current_dt, dx, dy,
             self.Pe, self.epsilon, self.contact_angle,
             bottom_ghost_phi,
             geometry.f_1_grid, geometry.f_2_grid,
@@ -888,15 +1230,22 @@ class PhaseFieldSolverGhostCell(BasePhaseFieldSolver):
             use_degenerate_mobility=self.use_degenerate_mobility,
             degenerate_mobility_clip=self.degenerate_mobility_clip,
             degenerate_mobility_blend=self.degenerate_mobility_blend,
+            u_face=u_face,
+            v_face=v_face,
         )
+        self._phase_stage("03_after_explicit_update", phi_new)
         if self.advection_bc_manager is not None:
             phi_new = self.advection_bc_manager.apply_boundary_conditions(
                 phi_new, U, current_dt, dx, dy, use_jax=True, geometry=geometry, skip_bottom=True
             )
+        self._phase_stage("05_after_advection_bcs", phi_new)
         if self.bc_manager is not None:
             phi_new = self.bc_manager.apply_boundary_conditions(
                 phi_new, dx, dy, use_jax=True, psi=psi, U=U, geometry=geometry
             )
+        self._phase_stage("06_after_phase_bcs", phi_new)
+        phi_new = self._preserve_phase_sum_if_requested(phi, phi_new)
+        self._phase_stage("07_after_preserve_phase_sum", phi_new)
         return phi_new
 
 

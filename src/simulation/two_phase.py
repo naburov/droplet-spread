@@ -166,7 +166,10 @@ class TwoPhaseSimulation(BaseSimulation):
             max_iterations = ppe_settings.get('max_iterations', 1000)
             min_iterations = ppe_settings.get('min_iterations', 1)
             under_relaxation = ppe_settings.get('under_relaxation', 1.0)
-            convergence_mode = ppe_settings.get('convergence_mode', 'interior')
+            default_convergence_mode = (
+                'both' if getattr(self.state.geometry, "has_geometry", False) else 'interior'
+            )
+            convergence_mode = ppe_settings.get('convergence_mode', default_convergence_mode)
             # No crutches: checkerboard filter, Rhie–Chow disabled; under_relaxation optional
             # Pass output_dir and step for diagnostics ONLY at checkpoint steps
             if hasattr(self, "checkpoint_interval") and self.state.step % self.checkpoint_interval == 0:
@@ -234,7 +237,8 @@ class TwoPhaseSimulation(BaseSimulation):
         """Update phase field."""
         self.state.phi = self.state.phase_solver.update(
             self.state.phi, self.state.U, self.state.dt, self.state.dx, self.state.dy,
-            self.state.geometry, use_jax=True, psi=self._get_psi_for_physics()
+            self.state.geometry, use_jax=True, psi=self._get_psi_for_physics(),
+            u_face=self.state.u_face, v_face=self.state.v_face
         )
         self.state.invalidate_cache()
     

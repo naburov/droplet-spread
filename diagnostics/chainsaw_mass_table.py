@@ -29,43 +29,15 @@ def load_rows(stats_path: str) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def mass_drift(rows: list[dict[str, str]], resume_step: int | None) -> tuple[float, float]:
+def mass_drift(rows: list[dict[str, str]]) -> tuple[float, float]:
+    """Mass drift from the first statistics row (experiment start) to the latest."""
     if not rows:
         return float("nan"), float("nan")
-    massN = float(rows[-1]["droplet_mass"])
     base = float(rows[0]["droplet_mass"])
-    if resume_step is not None:
-        for row in rows:
-            if int(row["step"]) <= resume_step:
-                base = float(row["droplet_mass"])
+    massN = float(rows[-1]["droplet_mass"])
     drift_abs = massN - base
     drift_rel = drift_abs / base if abs(base) > 1e-14 else float("nan")
     return drift_abs, drift_rel
-
-
-def resume_step_from_log(exp_dir: str) -> int | None:
-    log_path = os.path.join(exp_dir, "resume_mitigated.log")
-    if not os.path.isfile(log_path):
-        return None
-    text = open(log_path, encoding="utf-8", errors="ignore").read()
-    match = re.search(r"checkpoint_(\d+)\.npz at step (\d+)", text)
-    if not match:
-        return None
-    return int(match.group(2))
-
-
-def checkpoint_at_or_before(ckpts: list[str], step: int) -> str | None:
-    best = None
-    best_n = -1
-    for path in ckpts:
-        match = re.search(r"checkpoint_(\d+)", os.path.basename(path))
-        if not match:
-            continue
-        n = int(match.group(1))
-        if n <= step and n > best_n:
-            best_n = n
-            best = path
-    return best
 
 
 def analyze_experiment(exp_dir: str) -> dict[str, object]:
@@ -84,8 +56,7 @@ def analyze_experiment(exp_dir: str) -> dict[str, object]:
     if not rows:
         return row
 
-    resume_step = resume_step_from_log(exp_dir)
-    drift_abs, drift_rel = mass_drift(rows, (resume_step - 1) if resume_step else None)
+    drift_abs, drift_rel = mass_drift(rows)
     row["mass_drift_abs"] = drift_abs
     row["mass_drift_rel"] = drift_rel
 

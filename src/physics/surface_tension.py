@@ -47,23 +47,12 @@ def _smooth_curvature_3x3(curvature):
     Returns:
         Smoothed curvature field (Nx, Ny).
     """
-    # 3x3 box filter: average over center + 8 neighbors
-    smoothed = curvature.copy()
-    
-    # Edge neighbors: up, down, left, right
-    smoothed = smoothed + jnp.roll(curvature, 1, axis=0)   # up
-    smoothed = smoothed + jnp.roll(curvature, -1, axis=0)  # down
-    smoothed = smoothed + jnp.roll(curvature, 1, axis=1)   # left
-    smoothed = smoothed + jnp.roll(curvature, -1, axis=1)  # right
-    
-    # Corner neighbors
-    smoothed = smoothed + jnp.roll(jnp.roll(curvature, 1, axis=0), 1, axis=1)    # up-left
-    smoothed = smoothed + jnp.roll(jnp.roll(curvature, 1, axis=0), -1, axis=1)  # up-right
-    smoothed = smoothed + jnp.roll(jnp.roll(curvature, -1, axis=0), 1, axis=1)   # down-left
-    smoothed = smoothed + jnp.roll(jnp.roll(curvature, -1, axis=0), -1, axis=1)  # down-right
-    
-    # Normalize by 9 (center + 8 neighbors)
-    return smoothed / 9.0
+    padded = jnp.pad(curvature, ((1, 1), (1, 1)), mode="edge")
+    return (
+        padded[:-2, :-2] + padded[:-2, 1:-1] + padded[:-2, 2:]
+        + padded[1:-1, :-2] + padded[1:-1, 1:-1] + padded[1:-1, 2:]
+        + padded[2:, :-2] + padded[2:, 1:-1] + padded[2:, 2:]
+    ) / 9.0
 
 
 def _smooth_curvature(curvature, radius=1):
@@ -119,6 +108,7 @@ def jax_surface_tension_force(
     use_composition_field=True,
     composition_force_scale=1.0,
     weber_interpolation="constant_liquid",
+    force_form="csf",
 ):
     """Surface tension force. f_1_grid: terrain gradient (Nx, Ny).
 
@@ -149,13 +139,11 @@ def jax_surface_tension_force(
         )
     We = jnp.stack([We, We], axis=-1)
     
-    tension_force = (
-        composition_force_scale
-        * (3 * jnp.sqrt(2) * epsilon / (4 * We))
-        * curvature
-        * norm_grad_phase
-        * grad_phase
-    )
+    prefactor = composition_force_scale * (3 * jnp.sqrt(2) * epsilon / (4 * We))
+    if force_form == "legacy_norm_grad":
+        tension_force = prefactor * curvature * norm_grad_phase * grad_phase
+    else:
+        tension_force = prefactor * curvature * grad_phase
     
     return tension_force
 
@@ -213,6 +201,7 @@ class SurfaceTensionSolver:
         composition_force_scale=1.0,
         weber_interpolation="constant_liquid",
         apply_boundary_overwrite=True,
+        force_form="csf",
     ):
         """Initialize surface tension solver.
         
@@ -233,6 +222,7 @@ class SurfaceTensionSolver:
         self.composition_force_scale = float(composition_force_scale)
         self.weber_interpolation = str(weber_interpolation)
         self.apply_boundary_overwrite = bool(apply_boundary_overwrite)
+        self.force_form = str(force_form)
     
     def calculate_force(self, phi, dx, dy, geometry, use_jax=True, interface_mask=None):
         """Calculate surface tension force. geometry: from state."""
@@ -250,6 +240,7 @@ class SurfaceTensionSolver:
             use_composition_field=self.use_composition_field,
             composition_force_scale=self.composition_force_scale,
             weber_interpolation=self.weber_interpolation,
+            force_form=self.force_form,
         )
     
     def apply_boundary_conditions(self, surface_tension, phi, use_jax=True, geometry=None, **kwargs):

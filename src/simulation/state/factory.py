@@ -193,7 +193,7 @@ def create_state_from_config(config, restart_from=None):
             f"Unknown solver_params.phase_field_solver: {phase_solver_kind}. "
             "Supported values are 'simple' and 'ghost_cell'."
         )
-    fluid_solver = FluidDynamicsSolver(rho1, rho2, Re1, Re2, Fr, g)
+    fluid_solver = FluidDynamicsSolver(rho1, rho2, Re1, Re2, Fr, g, config=config)
     surface_tension_params = config.get("physical_params", {}).get("surface_tension", {})
     smooth_curvature = surface_tension_params.get("smooth_curvature", True)
     smoothing_radius = surface_tension_params.get("smoothing_radius", 1)
@@ -201,6 +201,7 @@ def create_state_from_config(config, restart_from=None):
     composition_force_scale = surface_tension_params.get("composition_force_scale", 1.0)
     weber_interpolation = surface_tension_params.get("weber_interpolation", "constant_liquid")
     apply_boundary_overwrite = surface_tension_params.get("apply_boundary_overwrite", True)
+    force_form = surface_tension_params.get("force_form", "csf")
     capillary_rhs_smoothing_radius = int(surface_tension_params.get("capillary_rhs_smoothing_radius", 1))
 
     surface_tension_solver = SurfaceTensionSolver(
@@ -214,6 +215,7 @@ def create_state_from_config(config, restart_from=None):
         composition_force_scale=composition_force_scale,
         weber_interpolation=weber_interpolation,
         apply_boundary_overwrite=apply_boundary_overwrite,
+        force_form=force_form,
     )
     solver_params = config.get("solver_params", {})
     physical_pressure_params = solver_params.get("physical_pressure", {})

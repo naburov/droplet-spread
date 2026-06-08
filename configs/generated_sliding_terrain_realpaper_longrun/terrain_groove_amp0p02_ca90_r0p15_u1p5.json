@@ -18,8 +18,9 @@
     "lambda_willmore": 0.0,
     "epsilon_willmore": 0.0,
     "surface_tension": {
-      "smooth_curvature": false,
-      "smoothing_radius": 1
+      "smooth_curvature": true,
+      "smoothing_radius": 1,
+      "force_form": "csf"
     }
   },
   "grid_params": {
@@ -31,7 +32,7 @@
   "time_params": {
     "dt": 0.0005,
     "t_max": 0.3,
-    "checkpoint_interval": 2500,
+    "checkpoint_interval": 100,
     "dt_initial": 0.00025,
     "cfl_number": 0.1,
     "capillary_cfl_number": 0.1,
@@ -102,7 +103,7 @@
       "cox_voinov_coefficient": 1.0,
       "cox_voinov_exponent": 0.333,
       "contact_angle_ghost_law": "analytic_gradient",
-      "contact_angle_full_wall": true,
+      "contact_angle_full_wall": false,
       "contact_mask_soft_band": 0.8,
       "contact_mask_grad_scale": 0.5
     },
@@ -156,7 +157,8 @@
         "right": "neumann"
       }
     },
-    "velocity_layout": "staggered"
+    "velocity_layout": "staggered",
+    "semi_implicit_contact_split": "explicit_delta"
   },
   "visualization": {
     "use_pyvista": false,

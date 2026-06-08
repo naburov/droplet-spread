@@ -2,17 +2,84 @@
 Fluid dynamics equations for droplet spreading simulation.
 """
 
+from functools import partial
+
 import jax.numpy as jnp
 from jax import jit
-from numerics.finite_differences import jax_gradient, jax_divergence, jax_laplacian
+from numerics.finite_differences import (
+    jax_gradient,
+    jax_divergence,
+    jax_laplacian,
+    jax_dx,
+    jax_dy,
+)
 from physics.properties import jax_calculate_density, jax_calculate_reynolds_number
 
 
 @jit
-def jax_compute_viscous_term(U, dx, dy, Re, f_1_grid, f_2_grid):
-    """Calculate viscous term (1/Re)∇²U. f_1_grid, f_2_grid: (Nx, Ny)."""
-    return jnp.stack([jax_laplacian(U[..., 0], dx, dy, f_1_grid, f_2_grid) / Re,
-                      jax_laplacian(U[..., 1], dx, dy, f_1_grid, f_2_grid) / Re], axis=-1)
+def jax_compute_viscous_stress_divergence(U, dx, dy, mu, f_1_grid):
+    """∇·τ for τ = μ(∇u + ∇uᵀ) with physical velocity components on terrain grid."""
+    u = U[..., 0]
+    v = U[..., 1]
+    h1 = f_1_grid
+
+    u_xi = jax_dx(u, h=dx)
+    u_eta = jax_dy(u, h=dy)
+    v_xi = jax_dx(v, h=dx)
+    v_eta = jax_dy(v, h=dy)
+
+    u_X = u_xi - h1 * u_eta
+    u_Y = u_eta
+    v_X = v_xi - h1 * v_eta
+    v_Y = v_eta
+
+    tau_xx = 2.0 * mu * u_X
+    tau_xy = mu * (u_Y + v_X)
+    tau_yy = 2.0 * mu * v_Y
+
+    div_tau_x = (
+        jax_dx(tau_xx, h=dx)
+        - h1 * jax_dy(tau_xx, h=dy)
+        + jax_dy(tau_xy, h=dy)
+    )
+    div_tau_y = (
+        jax_dx(tau_xy, h=dx)
+        - h1 * jax_dy(tau_xy, h=dy)
+        + jax_dy(tau_yy, h=dy)
+    )
+    return jnp.stack([div_tau_x, div_tau_y], axis=-1)
+
+
+def _effective_viscosity(Re, rho, mu_convention):
+    inv_re = 1.0 / jnp.maximum(Re, 1e-12)
+    if mu_convention == "rho_over_re":
+        return rho * inv_re
+    return inv_re
+
+
+@partial(jit, static_argnums=(6, 8))
+def jax_compute_viscous_term(
+    U, dx, dy, Re, f_1_grid, f_2_grid, viscous_form="component_laplacian",
+    rho=None, mu_convention="inv_re",
+):
+    """Viscous term for momentum RHS (before division by density).
+
+    component_laplacian: legacy (1/Re)∇²U via terrain scalar Laplacian.
+    stress_divergence: ∇·τ with τ = μ(∇u + ∇uᵀ), μ from Re (and optionally ρ).
+    """
+    if viscous_form == "component_laplacian":
+        return jnp.stack(
+            [
+                jax_laplacian(U[..., 0], dx, dy, f_1_grid, f_2_grid) / Re,
+                jax_laplacian(U[..., 1], dx, dy, f_1_grid, f_2_grid) / Re,
+            ],
+            axis=-1,
+        )
+
+    if rho is None:
+        rho = jnp.ones_like(Re)
+    mu = _effective_viscosity(Re, rho, mu_convention)
+    return jax_compute_viscous_stress_divergence(U, dx, dy, mu, f_1_grid)
 
 
 @jit
@@ -24,10 +91,14 @@ def jax_check_continuity(U, dx, dy, f_1_grid):
     return divergence_field, max_div, mean_div
 
 
-@jit
+@partial(jit, static_argnums=(15, 16, 17))
 def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2,
-                        Re1, Re2, Fr, g, phi, f_1_grid, f_2_grid, include_gravity=False, psi=None):
+                        Re1, Re2, Fr, g, phi, f_1_grid, f_2_grid,
+                        include_gravity=False, psi=None,
+                        viscous_form="component_laplacian", mu_convention="inv_re"):
     """Update velocity (predictor step). Grid is fluid-only (bottom-aligned). Ice (psi>0) zeroed when present."""
+    if psi is None:
+        psi = jnp.zeros_like(phi)
     ice_mask = psi > 0.0
     U = jnp.where(ice_mask[..., jnp.newaxis], 0.0, U)
 
@@ -39,7 +110,9 @@ def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2,
     
     grad_U = jax_gradient(U, dx, dy, f_1_grid)
     p_grad = jax_gradient(p, dx, dy, f_1_grid)
-    viscous_term = jax_compute_viscous_term(U, dx, dy, Re, f_1_grid, f_2_grid)
+    viscous_term = jax_compute_viscous_term(
+        U, dx, dy, Re, f_1_grid, f_2_grid, viscous_form, rho=rho, mu_convention=mu_convention,
+    )
     convective_term = jnp.stack([
         U[..., 0] * grad_U[..., 0, 0] + U[..., 1] * grad_U[..., 0, 1],
         U[..., 0] * grad_U[..., 1, 0] + U[..., 1] * grad_U[..., 1, 1]
@@ -68,13 +141,20 @@ def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2,
 class FluidDynamicsSolver:
     """Fluid dynamics solver for droplet spreading simulation."""
     
-    def __init__(self, rho1, rho2, Re1, Re2, Fr, g):
+    def __init__(self, rho1, rho2, Re1, Re2, Fr, g, config=None):
         self.rho1 = rho1
         self.rho2 = rho2
         self.Re1 = Re1
         self.Re2 = Re2
         self.Fr = Fr
         self.g = g
+        from diagnostics.viscous_form import normalize_mu_convention, normalize_viscous_form
+
+        solver_params = (config or {}).get("solver_params", {})
+        self.viscous_form = normalize_viscous_form(solver_params.get("viscous_form"))
+        self.mu_convention = normalize_mu_convention(
+            solver_params.get("viscous_mu_convention")
+        )
     
     def set_velocity_backend(self, backend):
         """Attach a velocity backend (currently a no-op; kept for API compatibility)."""
@@ -88,11 +168,14 @@ class FluidDynamicsSolver:
             psi = jnp.zeros_like(phi)
         elif not isinstance(psi, jnp.ndarray):
             psi = jnp.array(psi)
-        U_updated = jax_update_velocity(U, p, surface_tension, current_dt, dx, dy,
-                                       self.rho1, self.rho2, self.Re1, self.Re2,
-                                       self.Fr, self.g, phi,
-                                       geometry.f_1_grid, geometry.f_2_grid,
-                                       include_gravity=include_gravity, psi=psi)
+        U_updated = jax_update_velocity(
+            U, p, surface_tension, current_dt, dx, dy,
+            self.rho1, self.rho2, self.Re1, self.Re2,
+            self.Fr, self.g, phi,
+            geometry.f_1_grid, geometry.f_2_grid,
+            include_gravity=include_gravity, psi=psi,
+            viscous_form=self.viscous_form, mu_convention=self.mu_convention,
+        )
         return U_updated
 
     def check_continuity(self, U, dx, dy, geometry):

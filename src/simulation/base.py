@@ -606,6 +606,29 @@ class BaseSimulation(ABC):
 
     def _save_checkpoint(self):
         """Save checkpoint."""
+        solver_params = self.config.get("solver_params", {})
+        if solver_params.get("chainsaw_diagnostics", False):
+            from diagnostics.chainsaw_step_diagnostics import append_chainsaw_diagnostics_csv
+            from diagnostics.ghost_row_diagnostics import append_ghost_row_instep_csv
+            from diagnostics.phase_update_stage_diagnostics import append_phase_stage_rows
+
+            append_ghost_row_instep_csv(
+                self.state.phase_solver,
+                self.state.step,
+                self.state.t,
+                self.output_dir,
+            )
+            if solver_params.get(
+                "phase_stage_diagnostics",
+                solver_params.get("chainsaw_diagnostics", False),
+            ):
+                append_phase_stage_rows(
+                    self.state.phase_solver,
+                    self.state.step,
+                    self.state.t,
+                    self.output_dir,
+                )
+            append_chainsaw_diagnostics_csv(self, self.output_dir)
         self.state.ensure_face_velocities()
         save_checkpoint(
             self.state.step, self.state.phi, self.state.U, self.state.P,

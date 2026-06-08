@@ -72,6 +72,47 @@ def _terrain_grad_p_to_faces(p, dx, dy, geometry):
     return grad_x_u, grad_y_v
 
 
+def _mac_divergence_stats(u_face, v_face, dx, dy, geometry):
+    """MAC divergence metrics: global max/mean and interior-only max/mean."""
+    div_np = np.array(_mac_divergence_geometry(u_face, v_face, dx, dy, geometry))
+    interior = div_np[1:-1, 1:-1]
+    max_div = float(np.max(np.abs(div_np)))
+    mean_div = float(np.mean(np.abs(div_np)))
+    if interior.size > 0:
+        max_div_interior = float(np.max(np.abs(interior)))
+        mean_div_interior = float(np.mean(np.abs(interior)))
+    else:
+        max_div_interior = max_div
+        mean_div_interior = mean_div
+    return max_div, mean_div, max_div_interior, mean_div_interior
+
+
+def _mask_ppe_rhs_mac_boundary_artifacts(rhs_np, velocity_bc_manager):
+    """Zero RHS on boundary cell layers with spurious MAC divergence from velocity BCs."""
+    if velocity_bc_manager is None:
+        return rhs_np
+    vel_bc = velocity_bc_manager.config.get("boundary_conditions", {}).get("velocity", {})
+    n_x, n_y = rhs_np.shape
+
+    left = vel_bc.get("left", "")
+    if left in ("dirichlet", "no_slip"):
+        rhs_np[0, :] = 0.0
+
+    right = vel_bc.get("right", "")
+    if right in ("dirichlet", "no_slip"):
+        rhs_np[n_x - 1, :] = 0.0
+
+    bottom = vel_bc.get("bottom", "")
+    if bottom in ("no_slip", "dirichlet"):
+        rhs_np[:, 0] = 0.0
+
+    top = vel_bc.get("top", "")
+    if top in ("no_slip", "dirichlet"):
+        rhs_np[:, -1] = 0.0
+
+    return rhs_np
+
+
 def ppe_solve(U, dx, dy, dt, geometry, correction_solver=None,
               velocity_bc_manager=None, ppe_bcs=None,
               psi=None,
@@ -226,29 +267,61 @@ def ppe_solve_staggered(
         )
     use_terrain_projection = _has_terrain(geometry)
 
-    divergence_cc, max_div, mean_div, max_div_interior = check_divergence(U, dx, dy, geometry)
+    divergence_metric = "collocated"
+    mean_div_interior = None
+    if u_face_in is not None and v_face_in is not None:
+        u_chk = jnp.array(u_face_in) if not isinstance(u_face_in, jnp.ndarray) else u_face_in
+        v_chk = jnp.array(v_face_in) if not isinstance(v_face_in, jnp.ndarray) else v_face_in
+        if velocity_bc_manager is not None and hasattr(velocity_bc_manager, "apply_to_faces"):
+            u_chk, v_chk = velocity_bc_manager.apply_to_faces(
+                u_chk, v_chk, dx, dy, psi=psi, geometry=geometry, phi=phi
+            )
+        max_div, mean_div, max_div_interior, mean_div_interior = _mac_divergence_stats(
+            u_chk, v_chk, dx, dy, geometry
+        )
+        divergence_metric = "mac"
+    else:
+        _, max_div, mean_div, max_div_interior = check_divergence(U, dx, dy, geometry)
+        mean_div_interior = max_div_interior
+
     info = {
         "applied": False,
         "iterations": 0,
         "div_before_max": float(max_div),
         "div_before_mean": float(mean_div),
+        "div_before_max_interior": float(max_div_interior),
         "div_after_max": float(max_div),
         "div_after_mean": float(mean_div),
+        "div_after_max_interior": float(max_div_interior),
+        "divergence_metric": divergence_metric,
     }
     mode = str(convergence_mode).lower()
     if mode not in ("interior", "global", "both"):
         mode = "interior"
 
-    def _converged(max_div_val, max_div_interior_val, mean_div_val, mean_thr):
+    def _converged(max_div_val, max_div_interior_val, mean_div_val, mean_div_interior_val, mean_thr):
         if mode == "global":
             max_ok = max_div_val <= max_div_threshold
+            mean_ok = mean_div_val <= mean_thr
         elif mode == "both":
             max_ok = (max_div_interior_val <= max_div_threshold) and (max_div_val <= max_div_threshold)
+            mean_ok = (mean_div_interior_val <= mean_thr) and (mean_div_val <= mean_thr)
         else:  # interior
             max_ok = max_div_interior_val <= max_div_threshold
-        return max_ok and (mean_div_val <= mean_thr)
+            mean_ok = mean_div_interior_val <= mean_thr
+        return max_ok and mean_ok
 
-    if _converged(max_div, max_div_interior, mean_div, mean_div_threshold):
+    if _converged(max_div, max_div_interior, mean_div, mean_div_interior, mean_div_threshold):
+        if u_face_in is not None and v_face_in is not None:
+            u_skip = jnp.array(u_face_in) if not isinstance(u_face_in, jnp.ndarray) else u_face_in
+            v_skip = jnp.array(v_face_in) if not isinstance(v_face_in, jnp.ndarray) else v_face_in
+            if velocity_bc_manager is not None and hasattr(velocity_bc_manager, "apply_to_faces"):
+                u_skip, v_skip = velocity_bc_manager.apply_to_faces(
+                    u_skip, v_skip, dx, dy, psi=psi, geometry=geometry, phi=phi
+                )
+            info["u_face_out"] = u_skip
+            info["v_face_out"] = v_skip
+            U = to_collocated(u_skip, v_skip)
         return U, info
 
     if correction_solver is None:
@@ -331,6 +404,10 @@ def ppe_solve_staggered(
         rhs = (1.0 / dt) * div
 
         rhs_np = np.array(rhs)
+
+        # Velocity BC layers can show O(1/dx) MAC divergence that is not a bulk
+        # continuity defect; exclude them from the Poisson RHS.
+        rhs_np = _mask_ppe_rhs_mac_boundary_artifacts(rhs_np, velocity_bc_manager)
 
         # Mean-zero RHS only when all BCs are Neumann (otherwise pressure is unique).
         if ppe_bcs is not None and all(bc == "neumann" for bc in ppe_bcs.values()):
@@ -440,22 +517,21 @@ def ppe_solve_staggered(
         elif velocity_bc_manager is not None:
             raise ValueError("Staggered-only PPE requires face BC manager with apply_to_faces().")
 
-        div_face = _mac_divergence_geometry(u_face, v_face, dx, dy, geometry)
-        div_np = np.array(div_face)
-        interior = div_np[1:-1, 1:-1]
-        max_div = float(np.max(np.abs(div_np)))
-        mean_div = float(np.mean(np.abs(div_np)))
-        max_div_interior = float(np.max(np.abs(interior))) if interior.size > 0 else max_div
+        max_div, mean_div, max_div_interior, mean_div_interior = _mac_divergence_stats(
+            u_face, v_face, dx, dy, geometry
+        )
         # Progress output every 10 steps (handle nan for display)
         if it % 10 == 0 or it < 5:
             import sys
             md = max_div_interior if np.isfinite(max_div_interior) else np.nan
-            ad = mean_div if np.isfinite(mean_div) else np.nan
+            ad = mean_div_interior if np.isfinite(mean_div_interior) else np.nan
             sys.stdout.write(
-                f"\rPPE (staggered): iter {it}, max_div_interior: {md:.6f}, mean_div: {ad:.6f}"
+                f"\rPPE (staggered): iter {it}, max_div_interior: {md:.6f}, mean_div_interior: {ad:.6f}"
             )
             sys.stdout.flush()
-        if (it + 1) >= min_iterations and _converged(max_div, max_div_interior, mean_div, mean_div_threshold):
+        if (it + 1) >= min_iterations and _converged(
+            max_div, max_div_interior, mean_div, mean_div_interior, mean_div_threshold
+        ):
             info["iterations"] = it + 1
             break
         info["iterations"] = it + 1
@@ -464,15 +540,13 @@ def ppe_solve_staggered(
     sys.stdout.write("\n")
     sys.stdout.flush()
     # Final stats (BCs were applied every iteration above)
-    div_face = _mac_divergence_geometry(u_face, v_face, dx, dy, geometry)
-    div_np = np.array(div_face)
-    interior = div_np[1:-1, 1:-1]
-    max_div = float(np.max(np.abs(div_np)))
-    mean_div = float(np.mean(np.abs(div_np)))
-    max_div_interior = float(np.max(np.abs(interior))) if interior.size > 0 else max_div
+    max_div, mean_div, max_div_interior, mean_div_interior = _mac_divergence_stats(
+        u_face, v_face, dx, dy, geometry
+    )
     info["div_after_max"] = float(max_div)
     info["div_after_mean"] = float(mean_div)
     info["div_after_max_interior"] = float(max_div_interior)
+    info["div_after_mean_interior"] = float(mean_div_interior)
     if p_corr is not None:
         info["p_corr_out"] = np.array(p_corr)
     # Preserve converged face fields for callers running a staggered pipeline.
