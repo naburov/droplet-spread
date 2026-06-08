@@ -70,20 +70,26 @@ def jax_phase_convective_term(phi, U, dx, dy, f_1_grid):
 
 
 @jit
-def jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid):
-    """Finite-volume MAC advection div(phi * u_contravariant).
+def jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid, flux_shift=0.0):
+    """Finite-volume MAC advection div((phi - flux_shift) * u_contravariant).
 
     In terrain-following coordinates y = eta + h(x), J=1 and the conservative
     scalar transport fluxes are
-        F_x   = phi * u
-        F_eta = phi * (v - h'(x) u)
+        F_x   = (phi - flux_shift) * u
+        F_eta = (phi - flux_shift) * (v - h'(x) u)
     where u,v are physical velocity components.  For flat grids this reduces to
     the standard MAC divergence of upwinded scalar fluxes.
+
+    `flux_shift=0` is the legacy conservative phi flux.  `flux_shift=1` is the
+    phi-equation form of conservative liquid-fraction transport c=(1-phi)/2,
+    which keeps pure gas invariant even when a boundary row has nonzero
+    discrete MAC divergence.
     """
     nx, ny = phi.shape
+    q = phi - flux_shift
 
-    phi_w = jnp.concatenate([phi[0:1, :], phi], axis=0)
-    phi_e = jnp.concatenate([phi, phi[-1:, :]], axis=0)
+    phi_w = jnp.concatenate([q[0:1, :], q], axis=0)
+    phi_e = jnp.concatenate([q, q[-1:, :]], axis=0)
     phi_x_face = jnp.where(u_face >= 0.0, phi_w, phi_e)
     flux_x = u_face * phi_x_face
 
@@ -99,8 +105,8 @@ def jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid):
     f1_y_face = f1_y_face.at[:, ny].set(f_1_grid[:, -1])
 
     w_face = v_face - f1_y_face * u_y_face
-    phi_s = jnp.concatenate([phi[:, 0:1], phi], axis=1)
-    phi_n = jnp.concatenate([phi, phi[:, -1:]], axis=1)
+    phi_s = jnp.concatenate([q[:, 0:1], q], axis=1)
+    phi_n = jnp.concatenate([q, q[:, -1:]], axis=1)
     phi_y_face = jnp.where(w_face >= 0.0, phi_s, phi_n)
     flux_y = w_face * phi_y_face
 
@@ -336,7 +342,7 @@ def jax_update_phase(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angle, f_1
                      mu_top_value=0.0, mu_bottom_value=0.0,
                      mu_left_value=0.0, mu_right_value=0.0,
                      use_degenerate_mobility=False, degenerate_mobility_clip=0.0, degenerate_mobility_blend=0.0,
-                     u_face=None, v_face=None):
+                     u_face=None, v_face=None, phase_flux_shift=0.0):
     """JAX-compiled phase field update with optional Willmore regularization.
     
     Implements the Cahn-Hilliard-Willmore equation:
@@ -367,7 +373,9 @@ def jax_update_phase(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angle, f_1
     """
     convective_term = jax_phase_convective_term(phi, U, dx, dy, f_1_grid)
     if u_face is not None and v_face is not None:
-        convective_term = jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid)
+        convective_term = jax_phase_conservative_advection(
+            phi, u_face, v_face, dx, dy, f_1_grid, phase_flux_shift
+        )
     diffusive_term = jax_phase_diffusive_term_simple(
         phi, dx, dy, Pe, epsilon, f_1_grid, f_2_grid,
         lambda_willmore=lambda_willmore,
@@ -396,7 +404,7 @@ def jax_update_phase_ghost(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angl
                            mu_top_value=0.0, mu_bottom_value=0.0,
                            mu_left_value=0.0, mu_right_value=0.0,
                            use_degenerate_mobility=False, degenerate_mobility_clip=0.0, degenerate_mobility_blend=0.0,
-                           u_face=None, v_face=None):
+                           u_face=None, v_face=None, phase_flux_shift=0.0):
     """Phase update with a bottom ghost cell for the wetting BC."""
     if f_1_grid is None:
         f_1_grid = jnp.zeros_like(phi)
@@ -404,7 +412,9 @@ def jax_update_phase_ghost(phi, U, current_dt, dx, dy, Pe, epsilon, contact_angl
         f_2_grid = jnp.zeros_like(phi)
     convective_term = jax_phase_convective_term(phi, U, dx, dy, f_1_grid)
     if u_face is not None and v_face is not None:
-        convective_term = jax_phase_conservative_advection(phi, u_face, v_face, dx, dy, f_1_grid)
+        convective_term = jax_phase_conservative_advection(
+            phi, u_face, v_face, dx, dy, f_1_grid, phase_flux_shift
+        )
     diffusive_term = jax_phase_diffusive_term_ghost(
         phi, dx, dy, Pe, epsilon, bottom_ghost_phi, f_1_grid, f_2_grid,
         lambda_willmore=lambda_willmore,
@@ -473,6 +483,14 @@ class BasePhaseFieldSolver:
             self.degenerate_mobility_blend = float(solver_cfg.get("degenerate_mobility_blend", 0.0))
             self.degenerate_mobility_imex = bool(solver_cfg.get("degenerate_mobility_imex", True))
             self.degenerate_mobility_imex_mref = float(solver_cfg.get("degenerate_mobility_imex_mref", 1.0))
+            phase_advection_variable = str(solver_cfg.get("phase_advection_variable", "phi"))
+            if phase_advection_variable not in ("phi", "liquid_fraction"):
+                raise ValueError(
+                    "Unknown phase_advection_variable="
+                    f"{phase_advection_variable!r}. Allowed: 'phi', 'liquid_fraction'."
+                )
+            self.phase_advection_variable = phase_advection_variable
+            self.phase_flux_shift = 1.0 if phase_advection_variable == "liquid_fraction" else 0.0
             self.record_ghost_row_instep = bool(
                 solver_cfg.get(
                     "ghost_row_diagnostics",
@@ -543,6 +561,8 @@ class BasePhaseFieldSolver:
             self.degenerate_mobility_blend = 0.0
             self.degenerate_mobility_imex = True
             self.degenerate_mobility_imex_mref = 1.0
+            self.phase_advection_variable = "phi"
+            self.phase_flux_shift = 0.0
             self.record_ghost_row_instep = False
             self.record_phase_stage_diagnostics = False
             self._phase_debug_zero_advection = False
@@ -671,6 +691,7 @@ class BasePhaseFieldSolver:
             degenerate_mobility_blend=self.degenerate_mobility_blend,
             u_face=u_face,
             v_face=v_face,
+            phase_flux_shift=self.phase_flux_shift,
         )
         self._phase_stage("03_after_explicit_update", phi_new)
         phi_new = self._apply_advection_bcs(
@@ -979,6 +1000,7 @@ class BasePhaseFieldSolver:
                     degenerate_mobility_blend=self.degenerate_mobility_blend,
                     u_face=u_face,
                     v_face=v_face,
+                    phase_flux_shift=self.phase_flux_shift,
                 )
             else:
                 phi_new = jax_update_phase(
@@ -1000,6 +1022,7 @@ class BasePhaseFieldSolver:
                     degenerate_mobility_blend=self.degenerate_mobility_blend,
                     u_face=u_face,
                     v_face=v_face,
+                    phase_flux_shift=self.phase_flux_shift,
                 )
             skip_bottom = bool(skip_bottom or self._should_skip_bottom_advection_bc())
             phi_new = self._apply_advection_bcs(phi_new, U, current_dt, dx, dy, geometry, skip_bottom=skip_bottom)
@@ -1014,7 +1037,7 @@ class BasePhaseFieldSolver:
             if u_face is not None and v_face is not None:
                 convective_term = np.asarray(
                     jax_phase_conservative_advection(
-                        phi, u_face, v_face, dx, dy, geometry.f_1_grid
+                        phi, u_face, v_face, dx, dy, geometry.f_1_grid, self.phase_flux_shift
                     )
                 )
             else:
@@ -1232,6 +1255,7 @@ class PhaseFieldSolverGhostCell(BasePhaseFieldSolver):
             degenerate_mobility_blend=self.degenerate_mobility_blend,
             u_face=u_face,
             v_face=v_face,
+            phase_flux_shift=self.phase_flux_shift,
         )
         self._phase_stage("03_after_explicit_update", phi_new)
         if self.advection_bc_manager is not None:

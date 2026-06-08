@@ -55,8 +55,9 @@ def configure_case(base: dict, *, height: dict, fluid: dict, contact_angle: int)
     phys["Fr"] = fluid["Fr"]
     phys["g"] = -1.0
     phys["surface_tension"] = {
-        "smooth_curvature": False,
+        "smooth_curvature": True,
         "smoothing_radius": 1,
+        "force_form": "csf",
     }
 
     grid = cfg["grid_params"]
@@ -106,7 +107,7 @@ def configure_case(base: dict, *, height: dict, fluid: dict, contact_angle: int)
         "contact_angle_ghost_law": "analytic_gradient",
         "contact_mask_soft_band": 0.8,
         "contact_mask_grad_scale": 0.5,
-        "contact_angle_full_wall": True,
+        "contact_angle_full_wall": False,
     }
     bcs["chemical_potential"] = {
         "top": "zero_flux",
@@ -125,6 +126,8 @@ def configure_case(base: dict, *, height: dict, fluid: dict, contact_angle: int)
     solver = cfg["solver_params"]
     solver["phase_field_solver"] = "ghost_cell"
     solver["phase_update_mode"] = "semi_implicit_ch"
+    solver["semi_implicit_contact_split"] = "explicit_delta"
+    solver["phase_advection_variable"] = "liquid_fraction"
     solver["phase_diffusion_solver_backend"] = "pyamg"
     solver["phase_diffusion_solver_tol"] = 1e-8
     solver["phase_diffusion_solver_maxiter"] = 500

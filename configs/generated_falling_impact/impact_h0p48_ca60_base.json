@@ -122,7 +122,8 @@
         "right": "neumann"
       }
     },
-    "semi_implicit_contact_split": "explicit_delta"
+    "semi_implicit_contact_split": "explicit_delta",
+    "phase_advection_variable": "liquid_fraction"
   },
   "restart": {
     "restart_from": null
