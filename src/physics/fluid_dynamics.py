@@ -57,7 +57,7 @@ def _effective_viscosity(Re, rho, mu_convention):
     return inv_re
 
 
-@partial(jit, static_argnums=(6, 8))
+@partial(jit, static_argnames=("viscous_form", "mu_convention"))
 def jax_compute_viscous_term(
     U, dx, dy, Re, f_1_grid, f_2_grid, viscous_form="component_laplacian",
     rho=None, mu_convention="inv_re",
@@ -91,7 +91,7 @@ def jax_check_continuity(U, dx, dy, f_1_grid):
     return divergence_field, max_div, mean_div
 
 
-@partial(jit, static_argnums=(15, 16, 17))
+@partial(jit, static_argnames=("include_gravity", "viscous_form", "mu_convention"))
 def jax_update_velocity(U, p, surface_tension, current_dt, dx, dy, rho1, rho2,
                         Re1, Re2, Fr, g, phi, f_1_grid, f_2_grid,
                         include_gravity=False, psi=None,

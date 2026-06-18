@@ -1,0 +1,168 @@
+{
+  "description": "chainsaw potential A/B: ab_potential_blend001 (base air_shear_u0p5)",
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 17.5,
+    "Re2": 250.0,
+    "We1": 0.0025,
+    "We2": 0.5,
+    "Pe": 20.0,
+    "epsilon": 0.04,
+    "contact_angle": 90,
+    "include_gravity": true,
+    "Fr": 1.0,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "lambda_willmore": 0.0,
+    "epsilon_willmore": 0.0,
+    "surface_tension": {
+      "force_form": "potential"
+    }
+  },
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 128,
+    "Ny": 128
+  },
+  "time_params": {
+    "dt": 0.0005,
+    "dt_initial": 0.00025,
+    "t_max": 0.06,
+    "checkpoint_interval": 100,
+    "cfl_number": 0.1,
+    "capillary_cfl_number": 0.1,
+    "curvature_cfl_number": 0.1
+  },
+  "initial_conditions": {
+    "type": "droplet",
+    "droplet_radius": 0.15,
+    "droplet_center_x": 0.45,
+    "droplet_center_y": 0.0,
+    "pressure_drop": 0.01
+  },
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "dirichlet",
+      "dirichlet_values": {
+        "right": 0.0
+      }
+    },
+    "velocity": {
+      "top": "dirichlet",
+      "bottom": "navier_slip",
+      "slip_length": 0.02,
+      "left": "dirichlet",
+      "right": "do_nothing",
+      "dirichlet_values": {
+        "top": {
+          "u": 0.5,
+          "v": 0.0
+        },
+        "left": {
+          "u": 0.5,
+          "v": 0.0
+        }
+      },
+      "dirichlet_profiles": {
+        "left": {
+          "type": "boundary_layer",
+          "subtype": "slip_blasius",
+          "include_normal_velocity": false,
+          "reynolds_number": "Re2",
+          "characteristic_length": "Ly",
+          "bl_exponent": 0.5
+        }
+      }
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "contact_angle",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "ghost_cell",
+      "use_cox_voinov": true,
+      "cox_voinov_coefficient": 1.0,
+      "cox_voinov_exponent": 0.333,
+      "contact_angle_ghost_law": "wall_energy",
+      "contact_angle_full_wall": true,
+      "contact_mask_soft_band": 0.8,
+      "contact_mask_grad_scale": 0.5,
+      "contact_angle_wall_energy_scale": 1.0,
+      "contact_angle_wall_tangent_regularization": 0.0
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "impermeable",
+      "right": "impermeable",
+      "cout": 1.0
+    }
+  },
+  "solver_params": {
+    "phase_field_solver": "ghost_cell",
+    "phase_update_mode": "semi_implicit_ch",
+    "phase_diffusion_solver_backend": "pyamg",
+    "phase_diffusion_solver_tol": 1e-08,
+    "phase_diffusion_solver_maxiter": 500,
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "ppe": {
+      "mean_div_threshold": 0.15,
+      "max_div_threshold": 0.25,
+      "use_local_ppe": false,
+      "local_threshold_factor": 0.2,
+      "max_iterations": 1000,
+      "buffer_size": 5
+    },
+    "physical_pressure": {
+      "boundary_conditions": {
+        "top": "neumann",
+        "bottom": "neumann",
+        "left": "neumann",
+        "right": "neumann"
+      }
+    },
+    "semi_implicit_contact_split": "implicit_wall_energy",
+    "use_degenerate_mobility": true,
+    "phase_potential": "flory_huggins",
+    "degenerate_mobility_blend": 0.01,
+    "degenerate_mobility_power": 2.0,
+    "degenerate_mobility_imex": true,
+    "degenerate_mobility_imex_mref": 0.0,
+    "phase_convex_stabilization": 0.0,
+    "phase_convex_split": "log_entropy",
+    "phase_convex_split_maxiter": 8,
+    "phase_convex_split_tol": 1e-07,
+    "phase_convex_split_damping": 0.8,
+    "phase_log_theta": 0.25,
+    "phase_log_theta_c": 1.0,
+    "phase_log_delta": 1e-06
+  },
+  "visualization": {
+    "use_pyvista": false
+  },
+  "restart": {
+    "restart_from": null
+  }
+}

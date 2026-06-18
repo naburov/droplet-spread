@@ -4,7 +4,12 @@ Surface tension calculations for droplet spreading simulation.
 
 import jax.numpy as jnp
 from jax import jit
-from numerics.finite_differences import jax_gradient, jax_divergence, jax_norm, jax_dy
+from numerics.finite_differences import jax_gradient, jax_divergence, jax_norm, jax_laplacian
+from physics.free_energy import (
+    jax_free_energy_derivative,
+    potential_code_from_name,
+    diffuse_interface_sigma,
+)
 
 
 @jit
@@ -94,6 +99,21 @@ def jax_curvature_stats(phi, dx, dy, f_1_grid):
     return curvature_max, curvature_mean
 
 
+def _weber_field(phi, We1, We2, weber_interpolation):
+    """Per-cell Weber number from the configured interpolation."""
+    phi_mapped = 0.5 * (phi + 1.0)
+    if weber_interpolation == "harmonic":
+        return 1.0 / ((1.0 - phi_mapped) / We2 + phi_mapped / We1)
+    if weber_interpolation == "arithmetic":
+        return (1.0 - phi_mapped) * We2 + phi_mapped * We1
+    if weber_interpolation == "constant_liquid":
+        return jnp.full_like(phi, float(We2))
+    raise ValueError(
+        f"Unsupported weber_interpolation='{weber_interpolation}'. "
+        "Use one of: 'constant_liquid', 'harmonic', 'arithmetic'."
+    )
+
+
 def jax_surface_tension_force(
     phi,
     epsilon,
@@ -125,18 +145,7 @@ def jax_surface_tension_force(
     norm_grad_phase = jax_norm(grad_phase)
     norm_grad_phase = jnp.stack([norm_grad_phase, norm_grad_phase], axis=-1)
     
-    phi_mapped = 0.5 * (phi + 1.0)
-    if weber_interpolation == "harmonic":
-        We = 1.0 / ((1.0 - phi_mapped) / We2 + phi_mapped / We1)
-    elif weber_interpolation == "arithmetic":
-        We = (1.0 - phi_mapped) * We2 + phi_mapped * We1
-    elif weber_interpolation == "constant_liquid":
-        We = jnp.full_like(phi, float(We2))
-    else:
-        raise ValueError(
-            f"Unsupported weber_interpolation='{weber_interpolation}'. "
-            "Use one of: 'constant_liquid', 'harmonic', 'arithmetic'."
-        )
+    We = _weber_field(phi, We1, We2, weber_interpolation)
     We = jnp.stack([We, We], axis=-1)
     
     prefactor = composition_force_scale * (3 * jnp.sqrt(2) * epsilon / (4 * We))
@@ -146,6 +155,48 @@ def jax_surface_tension_force(
         tension_force = prefactor * curvature * grad_phase
     
     return tension_force
+
+
+def jax_potential_surface_tension_force(
+    phi,
+    epsilon,
+    We1,
+    We2,
+    dx,
+    dy,
+    f_1_grid,
+    f_2_grid,
+    sigma_ch,
+    potential_code=0,
+    log_theta=0.25,
+    log_theta_c=1.0,
+    log_delta=1e-6,
+    weber_interpolation="constant_liquid",
+    force_scale=1.0,
+):
+    """Energy-consistent capillary force F = lambda * mu * grad(phi).
+
+    mu = f'(phi) - epsilon^2 lap(phi) is the same chemical potential as in the
+    Cahn-Hilliard solve, so the force vanishes identically in bulk equilibrium
+    (mu = const, grad(phi) = 0) and needs no curvature reconstruction,
+    normalization, smoothing, or wall-row overwrites.
+
+    Calibration: the planar-interface pressure jump of this force is
+    lambda * sigma_ch * kappa, where sigma_ch = diffuse_interface_sigma(...).
+    lambda is chosen so the effective surface tension equals the one the CSF
+    form produced, sigma_eff = 3 sqrt(2) epsilon / (4 We); existing config
+    Weber numbers therefore keep their calibrated meaning.
+    """
+    mu = jax_free_energy_derivative(
+        phi, potential_code, log_theta, log_theta_c, log_delta
+    ) - epsilon**2 * jax_laplacian(phi, dx, dy, f_1_grid, f_2_grid)
+    grad_phi = jax_gradient(phi, dx, dy, f_1_grid)
+
+    We = _weber_field(phi, We1, We2, weber_interpolation)
+    sigma_eff = 3.0 * jnp.sqrt(2.0) * epsilon / (4.0 * We)
+    lam = force_scale * sigma_eff / sigma_ch
+
+    return jnp.stack([lam, lam], axis=-1) * mu[..., None] * grad_phi
 
 
 @jit
@@ -202,6 +253,7 @@ class SurfaceTensionSolver:
         weber_interpolation="constant_liquid",
         apply_boundary_overwrite=True,
         force_form="csf",
+        potential_params=None,
     ):
         """Initialize surface tension solver.
         
@@ -211,6 +263,10 @@ class SurfaceTensionSolver:
             contact_angle: Contact angle in degrees.
             smooth_curvature: Whether to smooth curvature to reduce grid artifacts.
             smoothing_radius: Radius of smoothing stencil (1 = 3x3).
+            force_form: 'csf', 'legacy_norm_grad', or 'potential' (mu grad phi).
+            potential_params: required for force_form='potential'; dict with the
+                CH free energy used by the phase solver: {'phase_potential',
+                'phase_log_theta', 'phase_log_theta_c', 'phase_log_delta'}.
         """
         self.epsilon = epsilon
         self.We1 = We1
@@ -223,9 +279,43 @@ class SurfaceTensionSolver:
         self.weber_interpolation = str(weber_interpolation)
         self.apply_boundary_overwrite = bool(apply_boundary_overwrite)
         self.force_form = str(force_form)
+        if self.force_form == "potential":
+            if potential_params is None:
+                raise ValueError(
+                    "force_form='potential' requires potential_params (the CH "
+                    "free-energy settings) so the force uses the same "
+                    "thermodynamic potential as the phase solver."
+                )
+            self.potential_code = potential_code_from_name(
+                potential_params.get("phase_potential", "polynomial")
+            )
+            self.log_theta = float(potential_params.get("phase_log_theta", 0.25))
+            self.log_theta_c = float(potential_params.get("phase_log_theta_c", 1.0))
+            self.log_delta = float(potential_params.get("phase_log_delta", 1e-6))
+            self.sigma_ch = diffuse_interface_sigma(
+                epsilon, self.potential_code, self.log_theta, self.log_theta_c
+            )
     
     def calculate_force(self, phi, dx, dy, geometry, use_jax=True, interface_mask=None):
         """Calculate surface tension force. geometry: from state."""
+        if self.force_form == "potential":
+            return jax_potential_surface_tension_force(
+                phi,
+                self.epsilon,
+                self.We1,
+                self.We2,
+                dx,
+                dy,
+                geometry.f_1_grid,
+                geometry.f_2_grid,
+                self.sigma_ch,
+                potential_code=self.potential_code,
+                log_theta=self.log_theta,
+                log_theta_c=self.log_theta_c,
+                log_delta=self.log_delta,
+                weber_interpolation=self.weber_interpolation,
+                force_scale=self.composition_force_scale,
+            )
         return jax_surface_tension_force(
             phi,
             self.epsilon,
@@ -245,6 +335,11 @@ class SurfaceTensionSolver:
     
     def apply_boundary_conditions(self, surface_tension, phi, use_jax=True, geometry=None, **kwargs):
         """Apply boundary conditions to surface tension. Surface at j=0. Normal from geometry.f_1_grid if non-flat."""
+        if self.force_form == "potential":
+            # The potential force already vanishes in bulk phases and is
+            # variationally consistent with the wetting BC; the wall-row
+            # overwrite below is a CSF-only regularization.
+            return surface_tension
         if not self.apply_boundary_overwrite:
             return surface_tension
         f_1_surface = None

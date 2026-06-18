@@ -25,6 +25,7 @@ class SparseSolverWrapper:
         self.accel = params.get('accel', 'bicgstab')
         self.tol = params.get('tol', 0.1)
         self.maxiter = params.get('maxiter', 1000)
+        self.terrain_laplacian_mode = params.get('terrain_laplacian_mode', 'legacy_stencil')
         
         self._rhs = None
         self._solution = None
@@ -104,6 +105,9 @@ class SparseSolverWrapper:
     def _build_terrain_laplacian(self):
         """Build terrain Laplacian L φ = φ_xx - 2 f' φ_xη - f'' φ_η + (1+f'²) φ_ηη.
         Same stencil as jax_laplacian. Flat (f_1=0, f_2=0) gives Cartesian 5-point."""
+        if self.terrain_laplacian_mode == "jax_derivative_composition":
+            self._build_terrain_laplacian_jax_composition()
+            return
         Nx, Ny = self.Nx, self.Ny
         dx, dy = self.dx, self.dy
         f1 = self._f_1  # (Nx, Ny)
@@ -118,7 +122,7 @@ class SparseSolverWrapper:
                 if i == 0 or i == Nx - 1 or j == 0 or j == Ny - 1:
                     continue
                 c_xx = 1.0 / (dx * dx)
-                c_xy = 1.0 / (4.0 * dx * dy)
+                c_xy = 1.0 / (2.0 * dx * dy)
                 c_yy = 1.0 / (dy * dy)
                 f_ij = f1[i, j]
                 f2_ij = f2[i, j]
@@ -130,17 +134,52 @@ class SparseSolverWrapper:
                     j * Nx + (i - 1), j * Nx + i, j * Nx + (i + 1),
                     (j + 1) * Nx + (i - 1), (j + 1) * Nx + i, (j + 1) * Nx + (i + 1),
                 ])
-                # (i,j-1): -a_eta + a_eta1, (i,j): -2*c_xx - 2*a_eta, (i,j+1): a_eta - a_eta1
+                # L φ = φ_xx - 2 f' φ_xη - f'' φ_η + (1 + f'^2) φ_ηη.
+                # Row order is eta-south, center eta, eta-north; within each row x-west, x, x-east.
                 data.extend([
-                    -f_ij * c_xy, c_xx, f_ij * c_xy,
-                    -a_eta + a_eta1, -2.0 * c_xx - 2.0 * a_eta, a_eta - a_eta1,
-                    f_ij * c_xy, c_xx, -f_ij * c_xy,
+                    -f_ij * c_xy, a_eta + a_eta1, f_ij * c_xy,
+                    c_xx, -2.0 * c_xx - 2.0 * a_eta, c_xx,
+                    f_ij * c_xy, a_eta - a_eta1, -f_ij * c_xy,
                 ])
         A = scipy.sparse.csr_matrix(
             (data, (row_ind, col_ind)), shape=(n, n), dtype=np.float64
         )
         self._apply_bc_2d_terrain(A)
         self._apply_corner_dirichlet()
+        self._setup_solver()
+
+    def _build_terrain_laplacian_jax_composition(self):
+        """Build the exact sparse analogue of numerics.finite_differences.jax_laplacian.
+
+        This mode is used by the semi-implicit phase-field solver: the explicit
+        JAX path computes φ_xx, φ_xη, φ_η and φ_ηη by composing first-derivative
+        operators with one-sided boundary rows.  A sparse implicit operator with
+        a different 3-point terrain stencil injects a residual at every step on
+        grooved substrates, which shows up as column-wise chainsaw artifacts.
+        """
+        Nx, Ny = self.Nx, self.Ny
+        f1 = self._f_1
+        f2 = self._f_2 if self._f_2 is not None else np.zeros_like(f1)
+
+        ix = scipy.sparse.identity(Nx, format="csr", dtype=np.float64)
+        iy = scipy.sparse.identity(Ny, format="csr", dtype=np.float64)
+        dx_cell = scipy.sparse.kron(
+            iy, self._create_first_derivative_matrix(Nx, self.dx), format="csr"
+        )
+        dy_cell = scipy.sparse.kron(
+            self._create_first_derivative_matrix(Ny, self.dy), ix, format="csr"
+        )
+
+        diag_f1 = scipy.sparse.diags(f1.T.reshape(-1), format="csr")
+        diag_f2 = scipy.sparse.diags(f2.T.reshape(-1), format="csr")
+        diag_metric = scipy.sparse.diags((1.0 + f1**2).T.reshape(-1), format="csr")
+
+        self.A = (
+            dx_cell @ dx_cell
+            - 2.0 * diag_f1 @ (dx_cell @ dy_cell)
+            - diag_f2 @ dy_cell
+            + diag_metric @ (dy_cell @ dy_cell)
+        ).tocsr()
         self._setup_solver()
     
     def _apply_bc_2d_terrain(self, A):
@@ -207,6 +246,24 @@ class SparseSolverWrapper:
         main = np.full(N, -2.0 / h**2, dtype=np.float64)
         off = np.full(max(N - 1, 0), 1.0 / h**2, dtype=np.float64)
         return scipy.sparse.diags((off, main, off), offsets=(-1, 0, 1), shape=(N, N), format="lil")
+
+    def _create_first_derivative_matrix(self, N, h):
+        """Create the matrix analogue of jax_dx/jax_dy first derivatives."""
+        rows, cols, data = [], [], []
+        for i in range(N):
+            if i == 0:
+                rows.extend([i, i])
+                cols.extend([0, 1])
+                data.extend([-1.0 / h, 1.0 / h])
+            elif i == N - 1:
+                rows.extend([i, i])
+                cols.extend([N - 2, N - 1])
+                data.extend([-1.0 / h, 1.0 / h])
+            else:
+                rows.extend([i, i])
+                cols.extend([i - 1, i + 1])
+                data.extend([-0.5 / h, 0.5 / h])
+        return scipy.sparse.csr_matrix((data, (rows, cols)), shape=(N, N))
     
     def _apply_bc_1d(self, T, boundary, h, is_start):
         """Apply BC to 1D matrix row."""

@@ -3,17 +3,29 @@
 Test script for the new boundary condition setup.
 
 Tests the updated boundary conditions:
-1. Pressure: Top Dirichlet p=0, all others Neumann ∂p/∂n=0
-2. Velocity: Left/Right slip/symmetry u=0, ∂u/∂n=0; Top open ∂u/∂n=0; Bottom no-slip u=0
+1. Pressure: Top Dirichlet p=0, all others Neumann dp/dn=0
+2. Velocity: Left/Right slip/symmetry u=0, du/dn=0; Top open du/dn=0; Bottom no-slip u=0
+
+Updated to current src/ APIs:
+- BC application is JAX-only (field.at[...]), so inputs are jnp arrays.
+- PressureBoundaryConditions.apply now requires dx, dy.
+- The printed diagnostics from the original script are now assertions.
+- The "write test_config.json and run main manually" step was replaced by
+  constructing all BC managers from the same config dict and asserting they
+  pick up the configured boundary types.
+- Matplotlib visualization was dropped.
 """
 
-import sys
 import os
+import sys
+
 import numpy as np
-import matplotlib.pyplot as plt
+import jax
+import jax.numpy as jnp
+jax.config.update('jax_enable_x64', True)
 
 # Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
 from boundary_conditions.velocity_bc import VelocityBoundaryConditions
 from boundary_conditions.pressure_bc import PressureBoundaryConditions
@@ -22,46 +34,36 @@ from boundary_conditions.pressure_bc import PressureBoundaryConditions
 def create_test_velocity_field(Nx=64, Ny=64):
     """Create a test velocity field with some flow."""
     U = np.zeros((Nx, Ny, 2))
-    
-    # Create a simple flow pattern
+
     x = np.linspace(0, 1, Nx)
     y = np.linspace(0, 1, Ny)
     X, Y = np.meshgrid(x, y, indexing='ij')
-    
+
     # Horizontal flow (left to right)
     U[:, :, 0] = 0.1 * np.sin(np.pi * Y) * np.cos(np.pi * X)
-    
+
     # Vertical flow (upward)
     U[:, :, 1] = 0.05 * np.sin(np.pi * X) * np.cos(np.pi * Y)
-    
-    return U
+
+    return jnp.asarray(U)
 
 
 def create_test_pressure_field(Nx=64, Ny=64):
     """Create a test pressure field."""
-    P = np.zeros((Nx, Ny))
-    
-    # Create a simple pressure pattern
     x = np.linspace(0, 1, Nx)
     y = np.linspace(0, 1, Ny)
     X, Y = np.meshgrid(x, y, indexing='ij')
-    
-    # Pressure field
+
     P = 0.1 * np.sin(2 * np.pi * X) * np.cos(2 * np.pi * Y)
-    
-    return P
+
+    return jnp.asarray(P)
 
 
 def test_velocity_boundary_conditions():
-    """Test the new velocity boundary conditions."""
-    print("Testing Velocity Boundary Conditions")
-    print("=" * 50)
-    
-    # Create test velocity field
+    """no_slip / slip_symmetry / do_nothing velocity BCs hold on their boundaries."""
     U = create_test_velocity_field()
     dx = dy = 1.0 / 63  # Grid spacing
-    
-    # Test configuration with new BCs
+
     config = {
         "boundary_conditions": {
             "velocity": {
@@ -72,88 +74,41 @@ def test_velocity_boundary_conditions():
             }
         }
     }
-    
-    # Create velocity BC manager
+
     velocity_bc = VelocityBoundaryConditions(config)
-    
-    # Apply boundary conditions
-    U_with_bc = velocity_bc.apply_boundary_conditions(U, dx, dy, use_jax=False)
-    
-    # Check boundary conditions
-    print("Checking velocity boundary conditions:")
-    
-    # Bottom: no-slip (u = 0)
-    bottom_u = U_with_bc[:, 0, 0]  # u-component at bottom
-    bottom_v = U_with_bc[:, 0, 1]  # v-component at bottom
-    print(f"  Bottom (no-slip): max|u| = {np.max(np.abs(bottom_u)):.6f}, max|v| = {np.max(np.abs(bottom_v)):.6f}")
-    
-    # Left: slip/symmetry (u = 0, ∂u/∂x = 0)
-    left_u = U_with_bc[0, :, 0]  # u-component at left
-    left_v_grad = np.abs(U_with_bc[0, :, 1] - U_with_bc[1, :, 1])  # ∂v/∂x at left
-    print(f"  Left (slip/symmetry): max|u| = {np.max(np.abs(left_u)):.6f}, max|∂v/∂x| = {np.max(left_v_grad):.6f}")
-    
-    # Right: slip/symmetry (u = 0, ∂u/∂x = 0)
-    right_u = U_with_bc[-1, :, 0]  # u-component at right
-    right_v_grad = np.abs(U_with_bc[-1, :, 1] - U_with_bc[-2, :, 1])  # ∂v/∂x at right
-    print(f"  Right (slip/symmetry): max|u| = {np.max(np.abs(right_u)):.6f}, max|∂v/∂x| = {np.max(right_v_grad):.6f}")
-    
-    # Top: do-nothing (∂u/∂y = 0)
-    top_u_grad = np.abs(U_with_bc[:, -1, 0] - U_with_bc[:, -2, 0])  # ∂u/∂y at top
-    top_v_grad = np.abs(U_with_bc[:, -1, 1] - U_with_bc[:, -2, 1])  # ∂v/∂y at top
-    print(f"  Top (do-nothing): max|∂u/∂y| = {np.max(top_u_grad):.6f}, max|∂v/∂y| = {np.max(top_v_grad):.6f}")
-    
-    # Plot results
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    
-    # Original velocity magnitude
-    im0 = axes[0, 0].imshow(np.sqrt(U[:, :, 0]**2 + U[:, :, 1]**2).T, 
-                           extent=[0, 1, 0, 1], origin='lower', cmap='viridis')
-    axes[0, 0].set_title('Original Velocity Magnitude')
-    axes[0, 0].set_xlabel('x')
-    axes[0, 0].set_ylabel('y')
-    plt.colorbar(im0, ax=axes[0, 0], shrink=0.8)
-    
-    # Velocity with BCs
-    im1 = axes[0, 1].imshow(np.sqrt(U_with_bc[:, :, 0]**2 + U_with_bc[:, :, 1]**2).T, 
-                           extent=[0, 1, 0, 1], origin='lower', cmap='viridis')
-    axes[0, 1].set_title('Velocity with New BCs')
-    axes[0, 1].set_xlabel('x')
-    axes[0, 1].set_ylabel('y')
-    plt.colorbar(im1, ax=axes[0, 1], shrink=0.8)
-    
-    # u-component
-    im2 = axes[1, 0].imshow(U_with_bc[:, :, 0].T, 
-                           extent=[0, 1, 0, 1], origin='lower', cmap='RdBu_r')
-    axes[1, 0].set_title('u-component (should be 0 at left/right)')
-    axes[1, 0].set_xlabel('x')
-    axes[1, 0].set_ylabel('y')
-    plt.colorbar(im2, ax=axes[1, 0], shrink=0.8)
-    
-    # v-component
-    im3 = axes[1, 1].imshow(U_with_bc[:, :, 1].T, 
-                           extent=[0, 1, 0, 1], origin='lower', cmap='RdBu_r')
-    axes[1, 1].set_title('v-component')
-    axes[1, 1].set_xlabel('x')
-    axes[1, 1].set_ylabel('y')
-    plt.colorbar(im3, ax=axes[1, 1], shrink=0.8)
-    
-    plt.tight_layout()
-    plt.savefig('velocity_bc_test.png', dpi=150, bbox_inches='tight')
-    plt.show()
-    
-    print("Velocity BC test completed!")
-    print("Results saved to 'velocity_bc_test.png'")
+    U_with_bc = np.asarray(velocity_bc.apply_boundary_conditions(U, dx, dy))
+
+    # Bottom: no-slip (u = 0, v = 0)
+    np.testing.assert_allclose(U_with_bc[:, 0, 0], 0.0, atol=1e-12,
+                               err_msg="bottom no-slip: u must vanish")
+    np.testing.assert_allclose(U_with_bc[:, 0, 1], 0.0, atol=1e-12,
+                               err_msg="bottom no-slip: v must vanish")
+
+    # Left: slip/symmetry (u = 0, dv/dx = 0)
+    np.testing.assert_allclose(U_with_bc[0, :, 0], 0.0, atol=1e-12,
+                               err_msg="left slip/symmetry: normal velocity must vanish")
+    np.testing.assert_allclose(U_with_bc[0, :, 1], U_with_bc[1, :, 1], atol=1e-12,
+                               err_msg="left slip/symmetry: tangential gradient must vanish")
+
+    # Right: slip/symmetry (u = 0, dv/dx = 0)
+    np.testing.assert_allclose(U_with_bc[-1, :, 0], 0.0, atol=1e-12,
+                               err_msg="right slip/symmetry: normal velocity must vanish")
+    np.testing.assert_allclose(U_with_bc[-1, :, 1], U_with_bc[-2, :, 1], atol=1e-12,
+                               err_msg="right slip/symmetry: tangential gradient must vanish")
+
+    # Top: do-nothing (dU/dy = 0)
+    np.testing.assert_allclose(U_with_bc[1:-1, -1, :], U_with_bc[1:-1, -2, :], atol=1e-12,
+                               err_msg="top do-nothing: normal gradient must vanish")
+
+    # Interior must be untouched.
+    np.testing.assert_array_equal(U_with_bc[1:-1, 1:-1, :], np.asarray(U)[1:-1, 1:-1, :])
 
 
 def test_pressure_boundary_conditions():
-    """Test the pressure boundary conditions."""
-    print("\nTesting Pressure Boundary Conditions")
-    print("=" * 50)
-    
-    # Create test pressure field
+    """Top open (Dirichlet p=0) and Neumann elsewhere hold after application."""
     P = create_test_pressure_field()
-    
-    # Test configuration
+    dx = dy = 1.0 / 63
+
     config = {
         "boundary_conditions": {
             "pressure": {
@@ -165,69 +120,33 @@ def test_pressure_boundary_conditions():
             }
         }
     }
-    
-    # Create pressure BC manager
+
     pressure_bc = PressureBoundaryConditions(config)
-    
-    # Apply boundary conditions
-    P_with_bc = pressure_bc.apply_boundary_conditions(P, use_jax=False)
-    
-    # Check boundary conditions
-    print("Checking pressure boundary conditions:")
-    
+    # apply now requires dx, dy
+    P_with_bc = np.asarray(pressure_bc.apply_boundary_conditions(P, dx, dy))
+
     # Top: Dirichlet (p = 0)
-    top_p = P_with_bc[:, -1]  # pressure at top
-    print(f"  Top (Dirichlet p=0): max|p| = {np.max(np.abs(top_p)):.6f}")
-    
-    # Bottom: Neumann (∂p/∂y = 0)
-    bottom_grad = np.abs(P_with_bc[:, 0] - P_with_bc[:, 1])  # ∂p/∂y at bottom
-    print(f"  Bottom (Neumann ∂p/∂y=0): max|∂p/∂y| = {np.max(bottom_grad):.6f}")
-    
-    # Left: Neumann (∂p/∂x = 0)
-    left_grad = np.abs(P_with_bc[0, :] - P_with_bc[1, :])  # ∂p/∂x at left
-    print(f"  Left (Neumann ∂p/∂x=0): max|∂p/∂x| = {np.max(left_grad):.6f}")
-    
-    # Right: Neumann (∂p/∂x = 0)
-    right_grad = np.abs(P_with_bc[-1, :] - P_with_bc[-2, :])  # ∂p/∂x at right
-    print(f"  Right (Neumann ∂p/∂x=0): max|∂p/∂x| = {np.max(right_grad):.6f}")
-    
-    # Plot results
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    
-    # Original pressure
-    im0 = axes[0].imshow(P.T, extent=[0, 1, 0, 1], origin='lower', 
-                        cmap='RdBu_r', vmin=-0.1, vmax=0.1)
-    axes[0].set_title('Original Pressure')
-    axes[0].set_xlabel('x')
-    axes[0].set_ylabel('y')
-    plt.colorbar(im0, ax=axes[0], shrink=0.8)
-    
-    # Pressure with BCs
-    im1 = axes[1].imshow(P_with_bc.T, extent=[0, 1, 0, 1], origin='lower', 
-                        cmap='RdBu_r', vmin=-0.1, vmax=0.1)
-    axes[1].set_title('Pressure with BCs (top=0, others Neumann)')
-    axes[1].set_xlabel('x')
-    axes[1].set_ylabel('y')
-    plt.colorbar(im1, ax=axes[1], shrink=0.8)
-    
-    plt.tight_layout()
-    plt.savefig('pressure_bc_test.png', dpi=150, bbox_inches='tight')
-    plt.show()
-    
-    print("Pressure BC test completed!")
-    print("Results saved to 'pressure_bc_test.png'")
+    np.testing.assert_allclose(P_with_bc[:, -1], 0.0, atol=1e-12,
+                               err_msg="top open BC: p must equal open_pressure (0)")
+
+    # Bottom: Neumann (dp/dy = 0)
+    np.testing.assert_allclose(P_with_bc[:, 0], P_with_bc[:, 1], atol=1e-12,
+                               err_msg="bottom Neumann: dp/dy must vanish")
+
+    # Left: Neumann (dp/dx = 0)
+    np.testing.assert_allclose(P_with_bc[0, :], P_with_bc[1, :], atol=1e-12,
+                               err_msg="left Neumann: dp/dx must vanish")
+
+    # Right: Neumann (dp/dx = 0)
+    np.testing.assert_allclose(P_with_bc[-1, :], P_with_bc[-2, :], atol=1e-12,
+                               err_msg="right Neumann: dp/dx must vanish")
+
+    # Interior must be untouched.
+    np.testing.assert_array_equal(P_with_bc[1:-1, 1:-1], np.asarray(P)[1:-1, 1:-1])
 
 
 def test_simulation_with_new_bcs():
-    """Test a short simulation with the new boundary conditions."""
-    print("\nTesting Simulation with New BCs")
-    print("=" * 50)
-    
-    # Run a short simulation
-    import subprocess
-    import os
-    
-    # Create a test config
+    """The full BC config block is accepted by all BC managers."""
     test_config = {
         "physical_params": {
             "rho2": 1000.0,
@@ -279,7 +198,8 @@ def test_simulation_with_new_bcs():
                 "bottom": "contact_angle",
                 "left": "neumann",
                 "right": "neumann",
-                "contact_angle_method": "robin"
+                # "robin" was removed; "simple" is the current method.
+                "contact_angle_method": "simple"
             },
             "chemical_potential": {
                 "top": "zero_flux",
@@ -297,35 +217,35 @@ def test_simulation_with_new_bcs():
             }
         }
     }
-    
-    # Save test config
-    import json
-    with open('test_config.json', 'w') as f:
-        json.dump(test_config, f, indent=4)
-    
-    print("Test configuration saved to 'test_config.json'")
-    print("You can run: native/bin/python src/main_refactored.py --config test_config.json")
+
+    from boundary_conditions.phase_field_bc import PhaseFieldBoundaryConditions
+    from boundary_conditions.advection_bc import AdvectionBoundaryConditions
+
+    velocity_bc = VelocityBoundaryConditions(test_config)
+    pressure_bc = PressureBoundaryConditions(test_config)
+    phase_field_bc = PhaseFieldBoundaryConditions(test_config)
+    advection_bc = AdvectionBoundaryConditions(test_config)
+
+    assert velocity_bc.bc_raw == {
+        "top": "do_nothing", "bottom": "no_slip",
+        "left": "slip_symmetry", "right": "slip_symmetry",
+    }
+    assert pressure_bc.bc_raw == {
+        "top": "open", "bottom": "neumann", "left": "neumann", "right": "neumann",
+    }
+    assert pressure_bc.open_pressure == 0.0
+    assert phase_field_bc.bc_raw["bottom"] == "contact_angle"
+    assert phase_field_bc.contact_angle_bc.contact_angle == 120
+    assert phase_field_bc.contact_angle_bc.method == "simple"
+    assert advection_bc.bc_raw == {
+        "top": "open", "bottom": "impermeable",
+        "left": "impermeable", "right": "impermeable",
+    }
+    assert advection_bc.cout == 1.0
 
 
 if __name__ == "__main__":
-    print("New Boundary Condition Test Suite")
-    print("=" * 60)
-    
-    try:
-        # Test 1: Velocity boundary conditions
-        test_velocity_boundary_conditions()
-        
-        # Test 2: Pressure boundary conditions
-        test_pressure_boundary_conditions()
-        
-        # Test 3: Simulation setup
-        test_simulation_with_new_bcs()
-        
-        print("\n" + "=" * 60)
-        print("All tests completed successfully!")
-        print("Check the generated PNG files for results.")
-        
-    except Exception as e:
-        print(f"Error during testing: {e}")
-        import traceback
-        traceback.print_exc()
+    test_velocity_boundary_conditions()
+    test_pressure_boundary_conditions()
+    test_simulation_with_new_bcs()
+    print("All new BC tests completed successfully!")

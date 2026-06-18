@@ -1,33 +1,58 @@
 #!/usr/bin/env python3
 """
 Test script to check if PPE is counteracting gravity.
+
+Updated to current src/ APIs:
+- jax_update_velocity has no solid_mask; the flat surface is described by
+  f_1_grid / f_2_grid (zeros). jax_check_continuity requires f_1_grid.
+- SurfaceTensionSolver / PressureSolver methods take a geometry object
+  (simulation.geometry.Geometry.flat).
+- solvers.projection_methods.ppe requires a geometry argument and returns
+  (U_corrected, info_dict). A velocity BC manager is passed explicitly because
+  the manager-less fallback inside ppe_solve references a removed helper.
+- The gravity body force uses the g/Fr^2 (classical Froude) convention.
+- Matplotlib visualization was dropped; the checks are numerical assertions.
 """
 
 import numpy as np
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
+import jax
 import sys
 import os
 
+jax.config.update('jax_enable_x64', True)
+
 # Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
 from physics.fluid_dynamics import jax_update_velocity, jax_check_continuity
 from physics.surface_tension import SurfaceTensionSolver
 from physics.pressure import PressureSolver
-from physics.properties import jax_calculate_density
 from simulation.initial_conditions import initialize_phase
+from simulation.geometry import Geometry
 from solvers.sparse_solver import SparseSolverWrapper
 from solvers.projection_methods import ppe
+from boundary_conditions.velocity_bc import VelocityBoundaryConditions
+
+
+def _make_neumann_solver(Nx, Ny, dx, dy):
+    solver = SparseSolverWrapper(Nx, Ny, dx, dy, "pyamg")
+    solver.set_top_boundary_condition("neumann")
+    solver.set_bottom_boundary_condition("neumann")
+    solver.set_left_boundary_condition("neumann")
+    solver.set_right_boundary_condition("neumann")
+    solver.create_sparse_matrix()
+    return solver
+
 
 def test_ppe_gravity_interaction():
-    """Test how PPE affects gravity."""
-    
+    """PPE removes the divergent part of the velocity but not the uniform gravity sink."""
+
     # Simple test parameters
     Nx, Ny = 64, 64
     Lx, Ly = 1.0, 1.0
     dx, dy = Lx / Nx, Ly / Ny
-    
+
     # Physical parameters
     rho1 = 1.0      # Air density
     rho2 = 1000.0   # Water density
@@ -41,148 +66,111 @@ def test_ppe_gravity_interaction():
     epsilon = 0.05
     contact_angle = 120
     atm_pressure = 0.0
-    
+
     # Create a simple droplet in the center
-    phi = initialize_phase(Nx, Ny, 0.2)
-    phi = jnp.array(phi)
-    
-    # Initialize velocity field (initially at rest)
+    phi = jnp.array(initialize_phase(Nx, Ny, 0.2))
+
+    # Initialize fields (fluid at rest)
     U = jnp.zeros((Nx, Ny, 2))
-    
-    # Initialize pressure field
-    P = jnp.zeros((Nx, Ny))
-    
+
     # Time step
     dt = 0.001
-    
-    print("=== PPE-Gravity Interaction Test ===")
-    print(f"Gravity: g = {g}")
-    print(f"Froude number: Fr = {Fr}")
-    
+
+    # Flat geometry for tests
+    geometry = Geometry.flat(Nx, Ny)
+    f_1_grid = geometry.f_1_grid
+    f_2_grid = geometry.f_2_grid
+
     # Calculate surface tension
     surface_tension_solver = SurfaceTensionSolver(epsilon, We1, We2, contact_angle)
-    surface_tension = surface_tension_solver.calculate_force(phi, dx, dy, use_jax=True)
-    surface_tension = surface_tension_solver.apply_boundary_conditions(surface_tension, phi, use_jax=True)
-    
-    # Calculate pressure
-    pressure_solver = PressureSolver(rho1, rho2, g, atm_pressure)
-    
-    # Create sparse solver for pressure
-    pressure_linear_solver = SparseSolverWrapper(Nx, Ny, dx, dy, "pyamg")
-    pressure_linear_solver.set_top_boundary_condition("neumann")
-    pressure_linear_solver.set_bottom_boundary_condition("neumann")
-    pressure_linear_solver.set_left_boundary_condition("neumann")
-    pressure_linear_solver.set_right_boundary_condition("neumann")
-    pressure_linear_solver.create_sparse_matrix()
-    
-    P_new = pressure_solver.update_pressure(surface_tension, Nx, Ny, dx, dy, phi, pressure_linear_solver, use_jax=True)
-    
-    # Flat geometry for tests
-    solid_mask = jnp.zeros((Nx, Ny), dtype=jnp.bool_)
-    f_1_grid = jnp.zeros((Nx, Ny))
-    f_2_grid = jnp.zeros((Nx, Ny))
+    surface_tension = surface_tension_solver.calculate_force(phi, dx, dy, geometry)
+    surface_tension = surface_tension_solver.apply_boundary_conditions(
+        surface_tension, phi, geometry=geometry
+    )
+
+    # Calculate pressure (capillary + hydrostatic)
+    pressure_solver = PressureSolver(
+        rho1, rho2, g, atm_pressure, Fr=Fr, include_gravity=include_gravity
+    )
+    P_new = pressure_solver.update_pressure(
+        surface_tension, dx, dy, geometry, phi,
+        _make_neumann_solver(Nx, Ny, dx, dy),
+    )
+    assert np.all(np.isfinite(np.asarray(P_new)))
 
     # Test 1: Velocity update with gravity
-    print("\n--- Test 1: Velocity update with gravity ---")
     U_after_velocity = jax_update_velocity(
         U, P_new, surface_tension, dt, dx, dy,
-        rho1, rho2, Re1, Re2, Fr, g, phi, solid_mask, f_1_grid, f_2_grid,
+        rho1, rho2, Re1, Re2, Fr, g, phi, f_1_grid, f_2_grid,
         include_gravity=include_gravity
     )
-    
-    print(f"Y-velocity after velocity update: {U_after_velocity[..., 1].mean():.6f}")
-    
-    # Check continuity
-    divergence, max_div, mean_div = jax_check_continuity(U_after_velocity, dx, dy, f_1_grid)
-    print(f"Max divergence: {max_div:.6f}")
-    print(f"Mean divergence: {mean_div:.6f}")
-    
+    assert np.all(np.isfinite(np.asarray(U_after_velocity)))
+
+    # Check continuity before PPE
+    _, max_div, mean_div = jax_check_continuity(U_after_velocity, dx, dy, f_1_grid)
+
     # Test 2: Apply PPE correction
-    print("\n--- Test 2: Apply PPE correction ---")
-    
-    # Create correction solver for PPE
-    correction_solver = SparseSolverWrapper(Nx, Ny, dx, dy, "pyamg")
-    correction_solver.set_top_boundary_condition("neumann")
-    correction_solver.set_bottom_boundary_condition("neumann")
-    correction_solver.set_left_boundary_condition("neumann")
-    correction_solver.set_right_boundary_condition("neumann")
-    correction_solver.create_sparse_matrix()
-    
-    # Apply PPE
-    U_after_ppe = ppe(U_after_velocity, dx, dy, dt, correction_solver, 
-                      div_threshold=0.01, max_div_threshold=1.0, mean_div_threshold=0.1)
-    
-    print(f"Y-velocity after PPE: {U_after_ppe[..., 1].mean():.6f}")
-    
+    velocity_bc_manager = VelocityBoundaryConditions({
+        "boundary_conditions": {
+            "velocity": {
+                "top": "slip_symmetry",
+                "bottom": "slip_symmetry",
+                "left": "slip_symmetry",
+                "right": "slip_symmetry",
+            }
+        }
+    })
+
+    U_after_ppe, info = ppe(
+        U_after_velocity, dx, dy, dt, geometry,
+        correction_solver=_make_neumann_solver(Nx, Ny, dx, dy),
+        velocity_bc_manager=velocity_bc_manager,
+        div_threshold=0.01, max_div_threshold=1.0, mean_div_threshold=0.1,
+        max_iterations=50,
+    )
+
+    assert np.all(np.isfinite(np.asarray(U_after_ppe))), "PPE produced non-finite velocities"
+    assert not info.get('diverged', False), "PPE must not blow up"
+
     # Check continuity after PPE
-    divergence_after, max_div_after, mean_div_after = jax_check_continuity(U_after_ppe, dx, dy, f_1_grid)
-    print(f"Max divergence after PPE: {max_div_after:.6f}")
-    print(f"Mean divergence after PPE: {mean_div_after:.6f}")
-    
+    _, max_div_after, mean_div_after = jax_check_continuity(U_after_ppe, dx, dy, f_1_grid)
+    if info['applied']:
+        assert float(mean_div_after) <= float(mean_div) + 1e-12, (
+            f"PPE must not increase mean divergence "
+            f"({float(mean_div):.3e} -> {float(mean_div_after):.3e})"
+        )
+
     # Calculate changes
     delta_U_velocity = U_after_velocity - U
     delta_U_ppe = U_after_ppe - U_after_velocity
     delta_U_total = U_after_ppe - U
-    
-    print(f"\nY-velocity change from gravity: {delta_U_velocity[..., 1].mean():.6f}")
-    print(f"Y-velocity change from PPE: {delta_U_ppe[..., 1].mean():.6f}")
-    print(f"Total Y-velocity change: {delta_U_total[..., 1].mean():.6f}")
-    
-    # Test 3: Check if PPE is removing the gravity effect
-    print(f"\nPPE effect on gravity: {delta_U_ppe[..., 1].mean():.6f}")
-    print(f"Gravity effect: {delta_U_velocity[..., 1].mean():.6f}")
-    print(f"Net effect: {delta_U_total[..., 1].mean():.6f}")
-    
-    # Create visualization
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    
-    # Phase field
-    im1 = axes[0, 0].imshow(phi.T, extent=[0, Lx, 0, Ly], origin='lower', cmap='viridis')
-    axes[0, 0].set_title('Phase Field (phi)')
-    axes[0, 0].set_xlabel('X')
-    axes[0, 0].set_ylabel('Y')
-    plt.colorbar(im1, ax=axes[0, 0])
-    
-    # Y-velocity after gravity
-    im2 = axes[0, 1].imshow(U_after_velocity[..., 1].T, extent=[0, Lx, 0, Ly], origin='lower', cmap='RdBu_r')
-    axes[0, 1].set_title('Y-Velocity After Gravity')
-    axes[0, 1].set_xlabel('X')
-    axes[0, 1].set_ylabel('Y')
-    plt.colorbar(im2, ax=axes[0, 1])
-    
-    # Y-velocity after PPE
-    im3 = axes[0, 2].imshow(U_after_ppe[..., 1].T, extent=[0, Lx, 0, Ly], origin='lower', cmap='RdBu_r')
-    axes[0, 2].set_title('Y-Velocity After PPE')
-    axes[0, 2].set_xlabel('X')
-    axes[0, 2].set_ylabel('Y')
-    plt.colorbar(im3, ax=axes[0, 2])
-    
-    # Gravity effect
-    im4 = axes[1, 0].imshow(delta_U_velocity[..., 1].T, extent=[0, Lx, 0, Ly], origin='lower', cmap='RdBu_r')
-    axes[1, 0].set_title('Gravity Effect')
-    axes[1, 0].set_xlabel('X')
-    axes[1, 0].set_ylabel('Y')
-    plt.colorbar(im4, ax=axes[1, 0])
-    
-    # PPE effect
-    im5 = axes[1, 1].imshow(delta_U_ppe[..., 1].T, extent=[0, Lx, 0, Ly], origin='lower', cmap='RdBu_r')
-    axes[1, 1].set_title('PPE Effect')
-    axes[1, 1].set_xlabel('X')
-    axes[1, 1].set_ylabel('Y')
-    plt.colorbar(im5, ax=axes[1, 1])
-    
-    # Total effect
-    im6 = axes[1, 2].imshow(delta_U_total[..., 1].T, extent=[0, Lx, 0, Ly], origin='lower', cmap='RdBu_r')
-    axes[1, 2].set_title('Total Effect')
-    axes[1, 2].set_xlabel('X')
-    axes[1, 2].set_ylabel('Y')
-    plt.colorbar(im6, ax=axes[1, 2])
-    
-    plt.tight_layout()
-    plt.savefig('ppe_gravity_test.png', dpi=150, bbox_inches='tight')
-    print(f"\nVisualization saved as 'ppe_gravity_test.png'")
-    
-    return U_after_velocity, U_after_ppe, delta_U_velocity, delta_U_ppe
+
+    predictor_effect = float(jnp.mean(delta_U_velocity[..., 1]))
+    ppe_effect = float(jnp.mean(delta_U_ppe[..., 1]))
+    total_effect = float(jnp.mean(delta_U_total[..., 1]))
+
+    # Magnitude of the raw gravity body-force change per step (g/Fr^2 convention).
+    body_force_change = abs((1 / Fr**2) * g * dt)
+
+    # The hydrostatic pressure gradient must counteract most of the gravity body
+    # force in the predictor step: the residual mean acceleration is far below
+    # the raw body force.
+    assert abs(predictor_effect) < 0.2 * body_force_change, (
+        f"hydrostatic pressure should nearly balance gravity: mean predictor "
+        f"change {predictor_effect:.6f} vs body force {body_force_change:.6f}"
+    )
+
+    # Test 3: PPE must not act as a spurious body force: its mean y-momentum
+    # injection must stay far below the gravity body-force scale.
+    assert abs(ppe_effect) < 0.2 * body_force_change, (
+        f"PPE should not inject body-force-scale momentum: PPE effect "
+        f"{ppe_effect:.6f} vs body force {body_force_change:.6f}"
+    )
+    assert abs(total_effect) < 0.2 * body_force_change, (
+        f"net mean y-velocity change should remain small: {total_effect:.6f}"
+    )
+
 
 if __name__ == "__main__":
     test_ppe_gravity_interaction()
+    print("PPE-gravity interaction test passed.")

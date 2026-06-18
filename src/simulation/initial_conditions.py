@@ -8,6 +8,28 @@ for the droplet spreading simulation.
 import numpy as np
 import jax.numpy as jnp
 
+from physics.free_energy import binodal_phi, potential_code_from_name
+
+
+def _phase_binodal_amplitude(config):
+    """Bulk equilibrium |phi| of the configured free energy.
+
+    The polynomial double well has binodal +-1, but the Flory-Huggins potential
+    has |phi_b| < 1 (e.g. 0.99933 for theta=0.25, theta_c=1).  Initializing the
+    bulk at +-1 instead of the binodal leaves a uniform chemical-potential
+    offset (f'(1-delta) is large for the log potential) that degenerate
+    mobility can never relax, which then leaks into the capillary force.
+    """
+    solver_cfg = (config or {}).get("solver_params", {})
+    code = potential_code_from_name(solver_cfg.get("phase_potential", "polynomial"))
+    if code == 0:
+        return 1.0
+    return binodal_phi(
+        code,
+        float(solver_cfg.get("phase_log_theta", 0.25)),
+        float(solver_cfg.get("phase_log_theta_c", 1.0)),
+    )
+
 
 def initialize_phase(Nx, Ny, radius, epsilon=0.03, config=None):
     """Initialize the phase field with a semicircle droplet on the surface.
@@ -47,6 +69,8 @@ def initialize_phase(Nx, Ny, radius, epsilon=0.03, config=None):
 
     if is_bubble:
         phi = -phi
+
+    phi = phi * _phase_binodal_amplitude(config)
 
     # Boundary at eta=0: copy from interior so BCs are consistent
     phi[:, 0] = phi[:, 1]
@@ -125,6 +149,8 @@ def initialize_phase_two_droplets_touching(Nx, Ny, radius, epsilon=0.03, config=
     if is_bubble:
         phi = -phi
 
+    phi = phi * _phase_binodal_amplitude(config)
+
     phi[:, 0] = phi[:, 1]
     return phi
 
@@ -161,6 +187,8 @@ def initialize_phase_rectangle(Nx, Ny, epsilon=0.03, config=None):
 
     if is_bubble:
         phi = -phi
+
+    phi = phi * _phase_binodal_amplitude(config)
 
     phi[:, 0] = phi[:, 1]
     return phi

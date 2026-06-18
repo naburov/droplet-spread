@@ -102,10 +102,11 @@
       "use_cox_voinov": true,
       "cox_voinov_coefficient": 1.0,
       "cox_voinov_exponent": 0.333,
-      "contact_angle_ghost_law": "analytic_gradient",
-      "contact_angle_full_wall": false,
+      "contact_angle_ghost_law": "wall_energy",
+      "contact_angle_full_wall": true,
       "contact_mask_soft_band": 0.8,
-      "contact_mask_grad_scale": 0.5
+      "contact_mask_grad_scale": 0.5,
+      "contact_angle_wall_energy_scale": 1.0
     },
     "chemical_potential": {
       "top": "zero_flux",
@@ -158,7 +159,8 @@
       }
     },
     "velocity_layout": "staggered",
-    "semi_implicit_contact_split": "explicit_delta"
+    "semi_implicit_contact_split": "implicit_wall_energy",
+    "phase_checkerboard_filter": 0.02
   },
   "visualization": {
     "use_pyvista": false,

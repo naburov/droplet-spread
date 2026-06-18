@@ -117,6 +117,7 @@ def jax_build_contact_angle_ghost_bottom(
     epsilon=1.0,
     contact_angle_full_wall=False,
     contact_angle_wall_energy_scale=1.0,
+    contact_angle_wall_tangent_regularization=0.0,
 ):
     """Build a ghost row below the bottom wall for contact-angle enforcement.
 
@@ -155,12 +156,28 @@ def jax_build_contact_angle_ghost_bottom(
     # Variational wall-free-energy form for the standard tanh profile:
     # |grad(phi)| = (1 - phi^2)/(sqrt(2) * epsilon). It avoids feeding noisy
     # wall gradients back into the ghost row and vanishes smoothly in bulk.
-    phi_wall = jnp.clip(phi[:, 0], -1.0, 1.0)
+    phi_wall = phi[:, 0]
     wall_energy_derivative = (
         -contact_angle_wall_energy_scale
         * cos_theta
         * (1.0 - phi_wall**2)
         / (jnp.sqrt(2.0) * jnp.maximum(epsilon, 1e-12))
+    )
+    metric_face = 0.5 * (metric[1:] + metric[:-1])
+    inv_metric_sqrt_face = 1.0 / jnp.sqrt(jnp.maximum(metric_face, 1e-12))
+    surface_flux = inv_metric_sqrt_face * (phi_wall[1:] - phi_wall[:-1]) / dx
+    surface_laplacian = jnp.zeros_like(phi_wall)
+    surface_laplacian = surface_laplacian.at[1:-1].set(
+        (surface_flux[1:] - surface_flux[:-1]) / dx
+        / metric_sqrt[1:-1]
+    )
+    surface_laplacian = surface_laplacian.at[0].set(surface_flux[0] / dx / metric_sqrt[0])
+    surface_laplacian = surface_laplacian.at[-1].set(
+        -surface_flux[-1] / dx / metric_sqrt[-1]
+    )
+    wall_energy_derivative = (
+        wall_energy_derivative
+        + contact_angle_wall_tangent_regularization * surface_laplacian
     )
     use_wall_energy = contact_angle_ghost_law == 1
     normal_derivative = jnp.where(use_wall_energy, wall_energy_derivative, analytic_derivative)
@@ -331,7 +348,8 @@ class ContactAngleBoundaryCondition:
                  contact_mask_soft_band=0.0, contact_mask_grad_scale=0.0,
                  cox_voinov_velocity_mode="side_aware",
                  contact_angle_ghost_law="wall_energy", contact_angle_full_wall=False,
-                 contact_angle_wall_energy_scale=1.0):
+                 contact_angle_wall_energy_scale=1.0,
+                 contact_angle_wall_tangent_regularization=0.0):
         """Initialize contact angle boundary condition.
         
         Args:
@@ -365,6 +383,11 @@ class ContactAngleBoundaryCondition:
             contact_angle_wall_energy_scale (float): Multiplier for the
                 wall-free-energy derivative. 1.0 is the standard tanh-profile
                 coefficient.
+            contact_angle_wall_tangent_regularization (float): Experimental
+                coefficient β for a wall-tangential penalty. Nonzero values add
+                β ∂ss φ to the wetting normal derivative. This is not the
+                energy-stable dynamic-wall CH discretization and can destabilize
+                high-wavenumber wall modes; production configs should keep 0.
         """
         self.contact_angle = contact_angle
         self.contact_angle_ice = contact_angle_ice if contact_angle_ice is not None else contact_angle
@@ -391,6 +414,19 @@ class ContactAngleBoundaryCondition:
         self.contact_angle_ghost_law_code = 1 if ghost_law == "wall_energy" else 0
         self.contact_angle_full_wall = bool(contact_angle_full_wall)
         self.contact_angle_wall_energy_scale = float(contact_angle_wall_energy_scale)
+        self.contact_angle_wall_tangent_regularization = float(
+            contact_angle_wall_tangent_regularization
+        )
+        if self.contact_angle_wall_tangent_regularization != 0.0:
+            import warnings
+
+            warnings.warn(
+                "contact_angle_wall_tangent_regularization is experimental and "
+                "can destabilize the ghost-cell CH wall operator. Use 0.0 for "
+                "production runs unless testing the dynamic-wall formulation.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         
         # Cache compiled function for geometry-aware method
         self._compiled_geometry_aware_fn = None
@@ -472,6 +508,7 @@ class ContactAngleBoundaryCondition:
             self.epsilon if self.epsilon is not None else dy,
             self.contact_angle_full_wall,
             self.contact_angle_wall_energy_scale,
+            self.contact_angle_wall_tangent_regularization,
         )
 
     def build_bottom_wall_energy_q_prime_jax(self, phi, dx, dy, geometry, psi=None, U=None, bottom_velocity_bc="no_slip"):
@@ -490,7 +527,7 @@ class ContactAngleBoundaryCondition:
             psi, U=U, contact_line_velocity=contact_line_velocity, bottom_velocity_bc=bottom_velocity_bc
         )
         epsilon = self.epsilon if self.epsilon is not None else dy
-        phi_wall = jnp.clip(phi[:, 0], -1.0, 1.0)
+        phi_wall = phi[:, 0]
         return (
             self.contact_angle_wall_energy_scale
             * 2.0

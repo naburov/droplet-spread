@@ -17,9 +17,7 @@
     "lambda_willmore": 0.0,
     "epsilon_willmore": 0.0,
     "surface_tension": {
-      "smooth_curvature": true,
-      "smoothing_radius": 1,
-      "force_form": "csf"
+      "force_form": "potential"
     }
   },
   "grid_params": {
@@ -90,10 +88,12 @@
       "use_cox_voinov": true,
       "cox_voinov_coefficient": 1.0,
       "cox_voinov_exponent": 0.333,
-      "contact_angle_ghost_law": "analytic_gradient",
+      "contact_angle_ghost_law": "wall_energy",
       "contact_mask_soft_band": 0.8,
       "contact_mask_grad_scale": 0.5,
-      "contact_angle_full_wall": false
+      "contact_angle_full_wall": true,
+      "contact_angle_wall_energy_scale": 1.0,
+      "contact_angle_wall_tangent_regularization": 0.0
     },
     "chemical_potential": {
       "top": "zero_flux",
@@ -143,7 +143,22 @@
         "right": "neumann"
       }
     },
-    "semi_implicit_contact_split": "explicit_delta"
+    "semi_implicit_contact_split": "implicit_wall_energy",
+    "use_degenerate_mobility": true,
+    "degenerate_mobility_blend": 0.0,
+    "degenerate_mobility_power": 2.0,
+    "degenerate_mobility_imex": true,
+    "degenerate_mobility_imex_mref": 0.0,
+    "phase_potential": "flory_huggins",
+    "phase_log_theta": 0.25,
+    "phase_log_theta_c": 1.0,
+    "phase_log_delta": 1e-06,
+    "phase_convex_stabilization": 0.0,
+    "phase_convex_split": "log_entropy",
+    "phase_convex_split_maxiter": 8,
+    "phase_convex_split_tol": 1e-07,
+    "phase_convex_split_damping": 0.8,
+    "phase_checkerboard_filter": 0.02
   },
   "visualization": {
     "use_pyvista": false

@@ -1,5 +1,10 @@
 """
 Material properties calculations for two-phase flow.
+
+Property interpolations evaluate phi as-is: keeping phi within [-1, 1] is the
+phase solver's responsibility (e.g. flory_huggins potential with the
+log_entropy convex split). Out-of-range phi yields out-of-range properties on
+purpose, so bound violations surface loudly instead of being masked.
 """
 
 import numpy as np
@@ -18,19 +23,16 @@ def calculate_density(phi, rho1, rho2):
     Returns:
         Density field.
     """
-    phi_mapped = np.clip((phi + 1) / 2.0, 0.0, 1.0)
-    # Linear interpolation: rho = (1 - w) * rho2 + w * rho1
-    # where w = phi_mapped is the air fraction
-    return (1 - phi_mapped) * rho2 + phi_mapped * rho1
+    w = (phi + 1) / 2.0
+    # Linear interpolation: rho = (1 - w) * rho2 + w * rho1, w = air fraction
+    return (1 - w) * rho2 + w * rho1
 
 
 @jit
 def jax_calculate_density(phi, rho1, rho2):
     """JAX version of density calculation using linear interpolation."""
-    phi_mapped = jnp.clip((phi + 1) / 2.0, 0.0, 1.0)
-    # Linear interpolation: rho = (1 - w) * rho2 + w * rho1
-    # where w = phi_mapped is the air fraction
-    return (1 - phi_mapped) * rho2 + phi_mapped * rho1
+    w = (phi + 1) / 2.0
+    return (1 - w) * rho2 + w * rho1
 
 
 def calculate_reynolds_number(phi, Re1, Re2):
@@ -41,12 +43,9 @@ def calculate_reynolds_number(phi, Re1, Re2):
         Re1: Reynolds number for air (phase 1).
         Re2: Reynolds number for liquid (phase 2).
     """
-    phi_mapped = np.clip((phi + 1) / 2.0, 0.0, 1.0)
+    w = (phi + 1) / 2.0
     # Harmonic mean interpolation: Re = 1 / ((1-w)/Re2 + w/Re1)
-    # where w = phi_mapped is air fraction
-    # phi_mapped = 0 (liquid): Re = Re2
-    # phi_mapped = 1 (air): Re = Re1
-    return 1 / ((1 - phi_mapped) / Re2 + phi_mapped / Re1)
+    return 1 / ((1 - w) / Re2 + w / Re1)
 
 
 @jit
@@ -58,10 +57,8 @@ def jax_calculate_reynolds_number(phi, Re1, Re2):
         Re1: Reynolds number for air (phase 1).
         Re2: Reynolds number for liquid (phase 2).
     """
-    phi_mapped = jnp.clip((phi + 1) / 2.0, 0.0, 1.0)
-    # Harmonic mean interpolation: Re = 1 / ((1-w)/Re2 + w/Re1)
-    # where w = phi_mapped is air fraction
-    return 1 / ((1 - phi_mapped) / Re2 + phi_mapped / Re1)
+    w = (phi + 1) / 2.0
+    return 1 / ((1 - w) / Re2 + w / Re1)
 
 
 def calculate_weber_number(phi, We1, We2):
@@ -72,12 +69,9 @@ def calculate_weber_number(phi, We1, We2):
         We1: Weber number for air (phase 1).
         We2: Weber number for liquid (phase 2).
     """
-    phi_mapped = np.clip((phi + 1) / 2.0, 0.0, 1.0)
+    w = (phi + 1) / 2.0
     # Harmonic mean interpolation: We = 1 / ((1-w)/We2 + w/We1)
-    # where w = phi_mapped is air fraction
-    # phi_mapped = 0 (liquid): We = We2
-    # phi_mapped = 1 (air): We = We1
-    return 1 / ((1 - phi_mapped) / We2 + phi_mapped / We1)
+    return 1 / ((1 - w) / We2 + w / We1)
 
 
 @jit
@@ -89,10 +83,8 @@ def jax_calculate_weber_number(phi, We1, We2):
         We1: Weber number for air (phase 1).
         We2: Weber number for liquid (phase 2).
     """
-    phi_mapped = jnp.clip((phi + 1) / 2.0, 0.0, 1.0)
-    # Harmonic mean interpolation: We = 1 / ((1-w)/We2 + w/We1)
-    # where w = phi_mapped is air fraction
-    return 1 / ((1 - phi_mapped) / We2 + phi_mapped / We1)
+    w = (phi + 1) / 2.0
+    return 1 / ((1 - w) / We2 + w / We1)
 
 
 def df_2(phi):

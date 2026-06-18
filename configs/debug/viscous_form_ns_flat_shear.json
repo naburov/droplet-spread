@@ -1,0 +1,115 @@
+{
+  "description": "NS-only flat linear shear decay: uniform liquid, initial u=a*eta, periodic-like open sides",
+  "physical_params": {
+    "rho1": 0.001225,
+    "rho2": 1.0,
+    "Re1": 35.0,
+    "Re2": 500.0,
+    "We1": 0.01,
+    "We2": 2.0,
+    "Pe": 20.0,
+    "epsilon": 0.04,
+    "alpha": 1.0,
+    "phase_penalty": 1000.0,
+    "contact_angle": 90,
+    "include_gravity": false,
+    "g": -1.0,
+    "atm_pressure": 0.0,
+    "Fr": 1.0,
+    "lambda_willmore": 0.0,
+    "epsilon_willmore": 0.0,
+    "surface_tension": {
+      "smooth_curvature": true,
+      "smoothing_radius": 1
+    }
+  },
+  "grid_params": {
+    "Lx": 1.0,
+    "Ly": 1.0,
+    "Nx": 64,
+    "Ny": 64
+  },
+  "time_params": {
+    "dt": 0.001,
+    "dt_initial": 0.001,
+    "t_max": 0.05,
+    "checkpoint_interval": 1000,
+    "cfl_number": 0.5,
+    "capillary_cfl_number": 10.0,
+    "curvature_cfl_number": 10.0
+  },
+  "initial_conditions": {
+    "type": "uniform_liquid",
+    "phi_value": -1.0,
+    "ns_velocity_profile": "linear_shear",
+    "ns_shear_rate": 1.0,
+    "geometry": {
+      "type": "flat"
+    }
+  },
+  "restart": {
+    "restart_from": null
+  },
+  "boundary_conditions": {
+    "pressure": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann"
+    },
+    "velocity": {
+      "top": "navier_slip",
+      "bottom": "navier_slip",
+      "slip_length": 0.05,
+      "left": "do_nothing",
+      "right": "do_nothing"
+    },
+    "phase_field": {
+      "top": "neumann",
+      "bottom": "neumann",
+      "left": "neumann",
+      "right": "neumann",
+      "contact_angle_method": "simple"
+    },
+    "chemical_potential": {
+      "top": "zero_flux",
+      "bottom": "zero_flux",
+      "left": "zero_flux",
+      "right": "zero_flux"
+    },
+    "advection": {
+      "top": "open",
+      "bottom": "impermeable",
+      "left": "open",
+      "right": "open",
+      "cout": 1.0
+    }
+  },
+  "solver_params": {
+    "velocity_layout": "staggered",
+    "viscous_form": "stress_divergence",
+    "ppe": {
+      "mean_div_threshold": 0.15,
+      "max_div_threshold": 0.25,
+      "max_iterations": 400,
+      "under_relaxation": 0.5,
+      "convergence_mode": "interior"
+    },
+    "pressure_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    },
+    "correction_solver": {
+      "backend": "pyamg",
+      "accel": "bicgstab",
+      "tol": 0.05,
+      "maxiter": 1000
+    }
+  },
+  "visualization": {
+    "use_pyvista": false,
+    "save_interval": 10000
+  }
+}

@@ -88,10 +88,20 @@ def _mac_divergence_stats(u_face, v_face, dx, dy, geometry):
 
 
 def _mask_ppe_rhs_mac_boundary_artifacts(rhs_np, velocity_bc_manager):
-    """Zero RHS on boundary cell layers with spurious MAC divergence from velocity BCs."""
+    """Optionally zero RHS on boundary cell layers.
+
+    For a MAC projection, boundary-adjacent cells are still part of the
+    incompressibility constraint: a no-penetration wall fixes the wall-normal
+    boundary face, while the first interior normal face must be corrected by the
+    pressure solve. Masking these rows leaves O(1/dy) divergence and can produce
+    wall pressure/velocity plumes. Keep the old masking behavior only behind an
+    explicit compatibility flag.
+    """
     if velocity_bc_manager is None:
         return rhs_np
     vel_bc = velocity_bc_manager.config.get("boundary_conditions", {}).get("velocity", {})
+    if not bool(vel_bc.get("mask_ppe_boundary_artifacts", False)):
+        return rhs_np
     n_x, n_y = rhs_np.shape
 
     left = vel_bc.get("left", "")

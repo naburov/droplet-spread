@@ -1,6 +1,21 @@
 #!/usr/bin/env python3
 """
 Test with a realistic droplet phase field.
+
+Updated to current src/ APIs:
+- configs/config_water_droplet.json no longer exists; the test uses
+  configs/config_template.json (the current reference config, which includes
+  solver_params).
+- The predictor step uses jax_update_velocity directly with
+  geometry.f_1_grid / f_2_grid (zeros for a flat surface). The
+  FluidDynamicsSolver.update_velocity wrapper cannot currently be invoked: it
+  forwards mu_convention (a string) as a non-static argument to the jitted
+  kernel, which TypeErrors under the installed JAX. The jitted kernel is the
+  same physics the wrapper would run.
+- check_continuity was replaced by jax_check_continuity(U, dx, dy, f_1_grid).
+- ppe requires a geometry argument and returns (U_corrected, info_dict); a
+  velocity BC manager is passed explicitly because the manager-less fallback
+  inside ppe_solve references a removed helper.
 """
 
 import os
@@ -11,32 +26,33 @@ import jax
 jax.config.update('jax_enable_x64', True)
 
 # Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
-from physics.fluid_dynamics import FluidDynamicsSolver
+from physics.fluid_dynamics import jax_update_velocity, jax_check_continuity
 from physics.properties import calculate_density
 from solvers.projection_methods import ppe
-from boundary_conditions.pressure_bc import PressureBoundaryConditions
 from boundary_conditions.velocity_bc import VelocityBoundaryConditions
 from config.config_loader import load_config
 from solvers.sparse_solver import SparseSolverWrapper
 from simulation.initial_conditions import initialize_phase
+from simulation.geometry import Geometry
+
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "configs", "config_template.json")
 
 
 def test_with_droplet():
-    """Test with a realistic droplet phase field."""
-    print("=" * 60)
-    print("TEST WITH DROPLET")
-    print("=" * 60)
-    
+    """One predictor + BC + (optional) PPE step with a droplet phase field stays sane."""
     # Load config
-    config = load_config("configs/config_water_droplet.json")
-    
+    config = load_config(CONFIG_PATH)
+    assert "solver_params" in config
+
     # Parameters
     Nx, Ny = 32, 32
     dx = dy = 0.1
     dt = 0.01
-    
+    geometry = Geometry.flat(Nx, Ny)
+
     # Physical parameters
     rho1 = config["physical_params"]["rho1"]
     rho2 = config["physical_params"]["rho2"]
@@ -45,98 +61,77 @@ def test_with_droplet():
     Fr = config["physical_params"]["Fr"]
     g = config["physical_params"]["g"]
     include_gravity = config["physical_params"]["include_gravity"]
-    
+
     # Create droplet phase field
     radius = config["initial_conditions"]["droplet_radius"]
-    phi = initialize_phase(Nx, Ny, radius)
-    phi = jnp.array(phi)
-    
-    print(f"Phase field range: {phi.min():.6f} / {phi.max():.6f}")
-    print(f"Droplet radius: {radius}")
-    
+    phi = jnp.array(initialize_phase(Nx, Ny, radius))
+
+    phi_np = np.asarray(phi)
+    assert phi_np.min() < -0.9 and phi_np.max() > 0.9, \
+        "phase field must contain both phases"
+
     # Initialize fields
     U = jnp.zeros((Nx, Ny, 2))
     P = jnp.zeros((Nx, Ny))
     surface_tension = jnp.zeros((Nx, Ny, 2))
-    
-    # Create solvers
-    fluid_solver = FluidDynamicsSolver(rho1, rho2, Re1, Re2, Fr, g)
-    
-    # Create correction solver
+
     correction_solver = SparseSolverWrapper(Nx, Ny, dx, dy, "pyamg")
     correction_solver.set_top_boundary_condition("neumann")
     correction_solver.set_bottom_boundary_condition("neumann")
     correction_solver.set_left_boundary_condition("neumann")
     correction_solver.set_right_boundary_condition("neumann")
     correction_solver.create_sparse_matrix()
-    
+
     # Step 1: Predictor step
-    print(f"\n1. PREDICTOR STEP:")
-    U_pred = fluid_solver.update_velocity(
-        U, P, surface_tension, dt, dx, dy, phi, 
-        include_gravity=include_gravity, use_jax=True
+    U_pred = jax_update_velocity(
+        U, P, surface_tension, dt, dx, dy,
+        rho1, rho2, Re1, Re2, Fr, g, phi,
+        geometry.f_1_grid, geometry.f_2_grid,
+        include_gravity=include_gravity
     )
-    print(f"  U_pred range: {U_pred.min():.6f} / {U_pred.max():.6f}")
-    print(f"  Mean y-velocity: {jnp.mean(U_pred[..., 1]):.6f}")
-    
-    # Check density
-    rho = calculate_density(phi, rho1, rho2)
-    print(f"  Density range: {rho.min():.6f} / {rho.max():.6f}")
-    
+    assert np.all(np.isfinite(np.asarray(U_pred))), "predictor produced non-finite velocities"
+
+    # Density must interpolate between the two phase densities.
+    rho = np.asarray(calculate_density(phi, rho1, rho2))
+    assert rho.min() >= min(rho1, rho2) - 1e-6
+    assert rho.max() <= max(rho1, rho2) + 1e-6
+
     # Step 2: Apply velocity boundary conditions
-    print(f"\n2. VELOCITY BOUNDARY CONDITIONS:")
     velocity_bc_manager = VelocityBoundaryConditions(config)
     U_bc = velocity_bc_manager.apply_boundary_conditions(U_pred, dx, dy, use_jax=True)
-    print(f"  U_bc range: {U_bc.min():.6f} / {U_bc.max():.6f}")
-    print(f"  Mean y-velocity: {jnp.mean(U_bc[..., 1]):.6f}")
-    
+    assert np.all(np.isfinite(np.asarray(U_bc)))
+
     # Step 3: Check continuity
-    print(f"\n3. CONTINUITY CHECK:")
-    from physics.fluid_dynamics import check_continuity
-    divergence, max_div, mean_div = check_continuity(U_bc, dx, dy)
-    print(f"  Divergence range: {divergence.min():.6f} / {divergence.max():.6f}")
-    print(f"  Max div: {max_div:.6f}, Mean div: {mean_div:.6f}")
-    
-    # Step 4: Apply PPE
-    print(f"\n4. APPLYING PPE:")
-    max_div_threshold = config["solver_params"]["ppe"]["max_div_threshold"]
-    mean_div_threshold = config["solver_params"]["ppe"]["mean_div_threshold"]
-    div_threshold = config["solver_params"]["ppe"]["div_threshold"]
-    
-    print(f"  Thresholds: max={max_div_threshold}, mean={mean_div_threshold}, div={div_threshold}")
-    print(f"  Should apply PPE: {max_div > max_div_threshold or mean_div > mean_div_threshold}")
-    
+    divergence, max_div, mean_div = jax_check_continuity(U_bc, dx, dy, geometry.f_1_grid)
+    assert np.all(np.isfinite(np.asarray(divergence)))
+    assert float(max_div) < 1000.0, "divergence exploded after one predictor step"
+
+    # Step 4: Apply PPE if needed
+    ppe_params = config["solver_params"]["ppe"]
+    max_div_threshold = ppe_params["max_div_threshold"]
+    mean_div_threshold = ppe_params["mean_div_threshold"]
+    div_threshold = ppe_params.get("div_threshold", 0.05)
+
     if max_div > max_div_threshold or mean_div > mean_div_threshold:
-        print(f"  Applying PPE...")
-        try:
-            U_corrected = ppe(U_bc, dx, dy, dt, correction_solver, 
-                             div_threshold=div_threshold, max_div_threshold=max_div_threshold, 
-                             mean_div_threshold=mean_div_threshold)
-            print(f"  ✓ PPE succeeded")
-            print(f"  U_corrected range: {U_corrected.min():.6f} / {U_corrected.max():.6f}")
-            print(f"  Mean y-velocity: {jnp.mean(U_corrected[..., 1]):.6f}")
-            
-            # Check final continuity
-            div_final, max_div_final, mean_div_final = check_continuity(U_corrected, dx, dy)
-            print(f"  Final divergence: Max={max_div_final:.6f}, Mean={mean_div_final:.6f}")
-            
-        except Exception as e:
-            print(f"  ✗ PPE failed: {e}")
-    else:
-        print(f"  PPE not needed")
+        U_corrected, info = ppe(
+            U_bc, dx, dy, dt, geometry, correction_solver,
+            velocity_bc_manager=velocity_bc_manager,
+            div_threshold=div_threshold, max_div_threshold=max_div_threshold,
+            mean_div_threshold=mean_div_threshold, max_iterations=50,
+        )
+        assert np.all(np.isfinite(np.asarray(U_corrected))), "PPE produced non-finite velocities"
+        assert not info.get('diverged', False), "PPE must not blow up"
 
-
-def main():
-    """Run droplet test."""
-    test_with_droplet()
-    
-    print(f"\n" + "=" * 60)
-    print("CONCLUSION")
-    print("=" * 60)
-    print("This test shows what happens with a realistic droplet.")
-    print("The key is to see if the divergence is much larger")
-    print("and if the PPE can handle it properly.")
+        _, max_div_final, mean_div_final = jax_check_continuity(
+            U_corrected, dx, dy, geometry.f_1_grid
+        )
+        if info['applied']:
+            assert float(mean_div_final) <= float(mean_div) + 1e-12, (
+                f"PPE increased mean divergence "
+                f"({float(mean_div):.3e} -> {float(mean_div_final):.3e})"
+            )
 
 
 if __name__ == "__main__":
-    main()
+    test_with_droplet()
+    print("Droplet step test passed.")

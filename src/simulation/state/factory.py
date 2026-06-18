@@ -204,6 +204,15 @@ def create_state_from_config(config, restart_from=None):
     force_form = surface_tension_params.get("force_form", "csf")
     capillary_rhs_smoothing_radius = int(surface_tension_params.get("capillary_rhs_smoothing_radius", 1))
 
+    # The potential force form must use the same free energy as the CH solve.
+    ch_solver_params = config.get("solver_params", {})
+    potential_params = {
+        "phase_potential": ch_solver_params.get("phase_potential", "polynomial"),
+        "phase_log_theta": ch_solver_params.get("phase_log_theta", 0.25),
+        "phase_log_theta_c": ch_solver_params.get("phase_log_theta_c", 1.0),
+        "phase_log_delta": ch_solver_params.get("phase_log_delta", 1e-6),
+    }
+
     surface_tension_solver = SurfaceTensionSolver(
         epsilon,
         We1,
@@ -216,6 +225,7 @@ def create_state_from_config(config, restart_from=None):
         weber_interpolation=weber_interpolation,
         apply_boundary_overwrite=apply_boundary_overwrite,
         force_form=force_form,
+        potential_params=potential_params,
     )
     solver_params = config.get("solver_params", {})
     physical_pressure_params = solver_params.get("physical_pressure", {})

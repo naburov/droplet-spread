@@ -11,6 +11,10 @@ CONTACT_SPLIT_FIX = {
     "semi_implicit_contact_split": "explicit_delta",
 }
 
+TERRAIN_CONTACT_SPLIT_FIX = {
+    "semi_implicit_contact_split": "implicit_wall_energy",
+}
+
 CONSERVATIVE_MITIGATION = {
     "contact_angle_full_wall": False,
     "contact_mask_soft_band": 0.8,
@@ -42,11 +46,28 @@ def patch_file(
     solver = data.setdefault("solver_params", {})
     time_params = data.setdefault("time_params", {})
     mitigation = AGGRESSIVE_MITIGATION if aggressive else CONSERVATIVE_MITIGATION
+    split_fix = TERRAIN_CONTACT_SPLIT_FIX if "terrain" in str(path) else CONTACT_SPLIT_FIX
+    if "terrain" in str(path):
+        mitigation = {
+            **mitigation,
+            "contact_angle_ghost_law": "wall_energy",
+            "contact_angle_full_wall": True,
+            "contact_angle_wall_energy_scale": 1.0,
+        }
     changed = False
-    for key, value in CONTACT_SPLIT_FIX.items():
+    for key, value in split_fix.items():
         if solver.get(key) != value:
             solver[key] = value
             changed = True
+    if "terrain" in str(path):
+        for key in (
+            "semi_implicit_contact_filter_passes",
+            "semi_implicit_contact_filter_strip_rows",
+            "semi_implicit_contact_delta_beta",
+        ):
+            if key in solver:
+                solver.pop(key, None)
+                changed = True
     for key, value in mitigation.items():
         if pf.get(key) != value:
             pf[key] = value

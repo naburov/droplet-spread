@@ -35,6 +35,9 @@ class PhaseFieldBoundaryConditions(BaseBoundaryCondition):
         contact_angle_ghost_law = bc_cfg.get("contact_angle_ghost_law", "wall_energy")
         contact_angle_full_wall = bc_cfg.get("contact_angle_full_wall", False)
         contact_angle_wall_energy_scale = bc_cfg.get("contact_angle_wall_energy_scale", 1.0)
+        contact_angle_wall_tangent_regularization = bc_cfg.get(
+            "contact_angle_wall_tangent_regularization", 0.0
+        )
         
         self.contact_angle_bc = ContactAngleBoundaryCondition(
             contact_angle=phys.get("contact_angle", 90),
@@ -53,6 +56,7 @@ class PhaseFieldBoundaryConditions(BaseBoundaryCondition):
             contact_angle_ghost_law=contact_angle_ghost_law,
             contact_angle_full_wall=contact_angle_full_wall,
             contact_angle_wall_energy_scale=contact_angle_wall_energy_scale,
+            contact_angle_wall_tangent_regularization=contact_angle_wall_tangent_regularization,
         )
     
     def apply(self, phi, dx: float, dy: float, **kwargs):
