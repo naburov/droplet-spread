@@ -291,6 +291,7 @@ class BaseSimulation(ABC):
         # Store for subclasses and progress output
         self._last_mass = mass
         self._last_droplet_bounds = (start_of_droplet, end_of_droplet, bottom_of_droplet, top_of_droplet)
+        self._last_phase_health = self._compute_phase_health_metrics(self.state.phi)
         
         surface_tension = self.state.compute_surface_tension()
         contact_line_forces = self._compute_contact_line_force_metrics(
@@ -330,6 +331,7 @@ class BaseSimulation(ABC):
             curvature_max=curvature_max,
             curvature_mean=curvature_mean,
             contact_line_forces=contact_line_forces,
+            phase_health=self._last_phase_health,
         )
         
         self.telemetry_logger.log_boundary_statistics(
@@ -356,6 +358,72 @@ class BaseSimulation(ABC):
             max_div_threshold=self.max_div_threshold,
             mean_div_threshold=self.mean_div_threshold
         )
+
+    @staticmethod
+    def _max_contiguous_true_run(mask, axis):
+        arr = mask if axis == 1 else mask.T
+        best = 0
+        for line in arr:
+            padded = np.concatenate(([False], np.asarray(line, dtype=bool), [False]))
+            edges = np.flatnonzero(padded[1:] != padded[:-1])
+            if edges.size:
+                best = max(best, int((edges[1::2] - edges[::2]).max()))
+        return best
+
+    def _compute_phase_health_metrics(self, phi):
+        phi_np = np.asarray(phi)
+        finite = np.isfinite(phi_np)
+        band = finite & (phi_np > -0.9) & (phi_np < 0.9)
+        liquid_unclipped = 0.5 * (1.0 - phi_np)
+        return {
+            "interface_cells_abs_lt_0p9": int(np.sum(band)),
+            "interface_max_width_cells": int(
+                max(
+                    self._max_contiguous_true_run(band, axis=0),
+                    self._max_contiguous_true_run(band, axis=1),
+                )
+            ),
+            "liquid_mass_unclipped": float(np.sum(liquid_unclipped) * self.state.dx * self.state.dy),
+            "liquid_area_phi_lt_0": int(np.sum(finite & (phi_np < 0.0))),
+            "vapor_area_phi_gt_0": int(np.sum(finite & (phi_np > 0.0))),
+        }
+
+    def _check_phase_health(self):
+        settings = self.config.get("solver_params", {}).get("phase_health", {}) or {}
+        if not settings.get("enabled", False):
+            return
+        metrics = self._compute_phase_health_metrics(self.state.phi)
+        if not hasattr(self, "_phase_health_initial"):
+            self._phase_health_initial = dict(metrics)
+        phi_np = np.asarray(self.state.phi)
+        failures = []
+        min_phi_floor = settings.get("min_phi_floor")
+        if min_phi_floor is not None and float(np.nanmin(phi_np)) < float(min_phi_floor):
+            failures.append(f"phi_min={float(np.nanmin(phi_np)):.6g} < {float(min_phi_floor):.6g}")
+        min_liquid_phi = settings.get("min_liquid_phi")
+        if min_liquid_phi is not None and float(np.nanmin(phi_np)) > float(min_liquid_phi):
+            failures.append(f"phi_min={float(np.nanmin(phi_np)):.6g} > {float(min_liquid_phi):.6g}")
+        max_phi_ceiling = settings.get("max_phi_ceiling")
+        if max_phi_ceiling is not None and float(np.nanmax(phi_np)) > float(max_phi_ceiling):
+            failures.append(f"phi_max={float(np.nanmax(phi_np)):.6g} > {float(max_phi_ceiling):.6g}")
+        max_interface_cells_ratio = settings.get("max_interface_cells_ratio")
+        if max_interface_cells_ratio is not None:
+            base = max(int(self._phase_health_initial["interface_cells_abs_lt_0p9"]), 1)
+            ratio = metrics["interface_cells_abs_lt_0p9"] / base
+            if ratio > float(max_interface_cells_ratio):
+                failures.append(
+                    f"interface_cells_ratio={ratio:.6g} > {float(max_interface_cells_ratio):.6g}"
+                )
+        max_interface_width_cells = settings.get("max_interface_width_cells")
+        if max_interface_width_cells is not None and metrics["interface_max_width_cells"] > int(max_interface_width_cells):
+            failures.append(
+                f"interface_max_width_cells={metrics['interface_max_width_cells']} > {int(max_interface_width_cells)}"
+            )
+        if failures:
+            raise RuntimeError(
+                "Phase health guard failed at step "
+                f"{self.state.step}: " + "; ".join(failures)
+            )
     
     def _log_memory_usage(self):
         """Log process RSS and JAX device memory (when available)."""

@@ -57,6 +57,11 @@ class TelemetryLogger:
             'surface_tension_max',
             'curvature_max', 'curvature_mean',
             'droplet_mass',
+            'phase_liquid_mass_unclipped',
+            'phase_interface_cells_abs_lt_0p9',
+            'phase_interface_max_width_cells',
+            'phase_liquid_area_phi_lt_0',
+            'phase_vapor_area_phi_gt_0',
             'droplet_start', 'droplet_end', 'droplet_bottom', 'droplet_top',
             'divergence_max', 'divergence_mean',
             'divergence_max_interior', 'divergence_mean_interior',
@@ -197,7 +202,8 @@ class TelemetryLogger:
                       droplet_bottom=None, droplet_top=None,
                       curvature_max=None, curvature_mean=None,
                       contact_line_forces=None,
-                      max_div_interior=None, mean_div_interior=None):
+                      max_div_interior=None, mean_div_interior=None,
+                      phase_health=None):
         """Log general statistics. geometry: from state (optional, for terrain stats)."""
         # Convert to NumPy if needed
         phi = self._convert_to_numpy(phi)
@@ -243,6 +249,11 @@ class TelemetryLogger:
             float(curvature_max) if curvature_max is not None else 0.0,
             float(curvature_mean) if curvature_mean is not None else 0.0,
             float(mass),
+            float((phase_health or {}).get('liquid_mass_unclipped', mass)),
+            float((phase_health or {}).get('interface_cells_abs_lt_0p9', 0.0)),
+            float((phase_health or {}).get('interface_max_width_cells', 0.0)),
+            float((phase_health or {}).get('liquid_area_phi_lt_0', 0.0)),
+            float((phase_health or {}).get('vapor_area_phi_gt_0', 0.0)),
             float(droplet_start), float(droplet_end),
             float(droplet_bottom) if droplet_bottom is not None else 0.0,
             float(droplet_top) if droplet_top is not None else 0.0,

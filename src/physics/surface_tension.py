@@ -4,7 +4,14 @@ Surface tension calculations for droplet spreading simulation.
 
 import jax.numpy as jnp
 from jax import jit
-from numerics.finite_differences import jax_gradient, jax_divergence, jax_norm, jax_laplacian
+from numerics.finite_differences import (
+    jax_dx,
+    jax_dy,
+    jax_gradient,
+    jax_divergence,
+    jax_norm,
+    jax_laplacian,
+)
 from physics.free_energy import (
     jax_free_energy_derivative,
     potential_code_from_name,
@@ -173,6 +180,7 @@ def jax_potential_surface_tension_force(
     log_delta=1e-6,
     weber_interpolation="constant_liquid",
     force_scale=1.0,
+    bottom_ghost_phi=None,
 ):
     """Energy-consistent capillary force F = lambda * mu * grad(phi).
 
@@ -187,9 +195,15 @@ def jax_potential_surface_tension_force(
     form produced, sigma_eff = 3 sqrt(2) epsilon / (4 We); existing config
     Weber numbers therefore keep their calibrated meaning.
     """
+    if bottom_ghost_phi is None:
+        lap_phi = jax_laplacian(phi, dx, dy, f_1_grid, f_2_grid)
+    else:
+        lap_phi = _jax_laplacian_with_optional_bottom_ghost(
+            phi, dx, dy, f_1_grid, f_2_grid, bottom_ghost_phi
+        )
     mu = jax_free_energy_derivative(
         phi, potential_code, log_theta, log_theta_c, log_delta
-    ) - epsilon**2 * jax_laplacian(phi, dx, dy, f_1_grid, f_2_grid)
+    ) - epsilon**2 * lap_phi
     grad_phi = jax_gradient(phi, dx, dy, f_1_grid)
 
     We = _weber_field(phi, We1, We2, weber_interpolation)
@@ -197,6 +211,59 @@ def jax_potential_surface_tension_force(
     lam = force_scale * sigma_eff / sigma_ch
 
     return jnp.stack([lam, lam], axis=-1) * mu[..., None] * grad_phi
+
+
+@jit
+def _jax_laplacian_with_optional_bottom_ghost(f, dx, dy, f_1_grid, f_2_grid, bottom_ghost):
+    """Terrain Laplacian matching the phase ghost-cell wall at eta=0."""
+    f_1 = f_1_grid
+    f_2 = f_2_grid
+    phi_xx = jax_dx(jax_dx(f, h=dx), h=dx)
+
+    phi_eta = jax_dy(f, h=dy)
+    phi_eta = phi_eta.at[:, 0].set((f[:, 1] - bottom_ghost) / (2.0 * dy))
+
+    phi_x_eta = jax_dx(phi_eta, h=dx)
+
+    phi_eta_eta = jax_dy(jax_dy(f, h=dy), h=dy)
+    phi_eta_eta = phi_eta_eta.at[:, 0].set((f[:, 1] - 2.0 * f[:, 0] + bottom_ghost) / (dy**2))
+    phi_eta_eta = phi_eta_eta.at[:, -1].set((f[:, -2] - f[:, -1]) / (dy**2))
+
+    return phi_xx - 2.0 * f_1 * phi_x_eta - f_2 * phi_eta + (1.0 + f_1**2) * phi_eta_eta
+
+
+@jit
+def jax_build_wall_energy_bottom_ghost_for_force(
+    phi,
+    dx,
+    dy,
+    f_1_grid,
+    contact_angle,
+    epsilon,
+    wall_energy_scale=1.0,
+):
+    """Build the wall-energy ghost row used by the potential capillary force.
+
+    This mirrors the wall-energy branch of the phase-field ghost-cell BC.  The
+    capillary force must use the same wall Laplacian as the CH chemical
+    potential; otherwise the pressure route sees a different μ near the wall
+    from the phase solver.
+    """
+    theta_effective = jnp.pi - contact_angle * jnp.pi / 180.0
+    cos_theta = jnp.cos(theta_effective)
+    f_1_surface = f_1_grid[:, 0]
+    metric = 1.0 + f_1_surface**2
+    metric_sqrt = jnp.sqrt(metric)
+    phi_x_comp = jax_dx(phi, h=dx)[:, 0]
+    phi_wall = phi[:, 0]
+    normal_derivative = (
+        -wall_energy_scale
+        * cos_theta
+        * (1.0 - phi_wall**2)
+        / (jnp.sqrt(2.0) * jnp.maximum(epsilon, 1e-12))
+    )
+    eta_derivative = (normal_derivative * metric_sqrt + f_1_surface * phi_x_comp) / metric
+    return phi[:, 1] - 2.0 * dy * eta_derivative
 
 
 @jit
@@ -254,6 +321,8 @@ class SurfaceTensionSolver:
         apply_boundary_overwrite=True,
         force_form="csf",
         potential_params=None,
+        potential_wall_laplacian="plain",
+        potential_wall_energy_scale=1.0,
     ):
         """Initialize surface tension solver.
         
@@ -279,6 +348,13 @@ class SurfaceTensionSolver:
         self.weber_interpolation = str(weber_interpolation)
         self.apply_boundary_overwrite = bool(apply_boundary_overwrite)
         self.force_form = str(force_form)
+        self.potential_wall_laplacian = str(potential_wall_laplacian)
+        if self.potential_wall_laplacian not in ("plain", "wall_energy"):
+            raise ValueError(
+                "potential_wall_laplacian must be 'plain' or 'wall_energy', got "
+                f"{self.potential_wall_laplacian!r}"
+            )
+        self.potential_wall_energy_scale = float(potential_wall_energy_scale)
         if self.force_form == "potential":
             if potential_params is None:
                 raise ValueError(
@@ -299,6 +375,17 @@ class SurfaceTensionSolver:
     def calculate_force(self, phi, dx, dy, geometry, use_jax=True, interface_mask=None):
         """Calculate surface tension force. geometry: from state."""
         if self.force_form == "potential":
+            bottom_ghost_phi = None
+            if self.potential_wall_laplacian == "wall_energy":
+                bottom_ghost_phi = jax_build_wall_energy_bottom_ghost_for_force(
+                    phi,
+                    dx,
+                    dy,
+                    geometry.f_1_grid,
+                    self.contact_angle,
+                    self.epsilon,
+                    self.potential_wall_energy_scale,
+                )
             return jax_potential_surface_tension_force(
                 phi,
                 self.epsilon,
@@ -315,6 +402,7 @@ class SurfaceTensionSolver:
                 log_delta=self.log_delta,
                 weber_interpolation=self.weber_interpolation,
                 force_scale=self.composition_force_scale,
+                bottom_ghost_phi=bottom_ghost_phi,
             )
         return jax_surface_tension_force(
             phi,

@@ -202,6 +202,8 @@ def create_state_from_config(config, restart_from=None):
     weber_interpolation = surface_tension_params.get("weber_interpolation", "constant_liquid")
     apply_boundary_overwrite = surface_tension_params.get("apply_boundary_overwrite", True)
     force_form = surface_tension_params.get("force_form", "csf")
+    potential_wall_laplacian = surface_tension_params.get("potential_wall_laplacian", "plain")
+    potential_wall_energy_scale = surface_tension_params.get("potential_wall_energy_scale", 1.0)
     capillary_rhs_smoothing_radius = int(surface_tension_params.get("capillary_rhs_smoothing_radius", 1))
 
     # The potential force form must use the same free energy as the CH solve.
@@ -226,6 +228,8 @@ def create_state_from_config(config, restart_from=None):
         apply_boundary_overwrite=apply_boundary_overwrite,
         force_form=force_form,
         potential_params=potential_params,
+        potential_wall_laplacian=potential_wall_laplacian,
+        potential_wall_energy_scale=potential_wall_energy_scale,
     )
     solver_params = config.get("solver_params", {})
     physical_pressure_params = solver_params.get("physical_pressure", {})

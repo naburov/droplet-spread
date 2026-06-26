@@ -258,6 +258,7 @@ class TwoPhaseSimulation(BaseSimulation):
             u_face=self.state.u_face, v_face=self.state.v_face
         )
         self.state.invalidate_cache()
+        self._check_phase_health()
     
     def _pressure_update(self):
         """Update pressure field."""
